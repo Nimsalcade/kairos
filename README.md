@@ -121,6 +121,7 @@ pure-Python reference (`KAIROS_FORCE_PY_CRYPTO=1`).
 
 ## Get involved
 
+- **Announcement and discussion:** [Bitcointalk thread](https://bitcointalk.org/index.php?topic=5594931.0), posted by the maintainer of this repository as CreatorofKairos.
 - **Found a bug?** [Open an issue](../../issues/new/choose) using the bug report form.
 - **Found a security problem?** Please **don't** open a public issue. See
   [SECURITY.md](SECURITY.md) for private reporting.
