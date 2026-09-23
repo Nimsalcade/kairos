@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+
+# Kairos data: NEVER commit wallets, cookies or chain data
+.kairos/
+wallet.json
+*.tmp
+.cookie
+blocks-v2.dat
+peers.json
+kairos.env
+
+# OS
+.DS_Store

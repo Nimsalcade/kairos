@@ -1,0 +1,30 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.10", "3.11", "3.12", "3.13"]   # 3.9 is end-of-life; verified manually
+        backend: [libsecp256k1, python]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install libsecp256k1 backend
+        run: pip install coincurve
+      - name: Run tests
+        env:
+          KAIROS_FORCE_PY_CRYPTO: ${{ matrix.backend == 'python' && '1' || '' }}
+        run: python -m unittest discover -s tests -v

@@ -1,0 +1,28 @@
+name: Idea or feature request
+description: Suggest an improvement to Kairos.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      placeholder: "Running a node on a Raspberry Pi is hard because ..."
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What do you suggest?
+    validations:
+      required: true
+  - type: dropdown
+    id: consensus
+    attributes:
+      label: Would this change which blocks or transactions are valid?
+      description: Changes to validity are forks and need much more care.
+      options:
+        - "No"
+        - "Yes"
+        - Not sure
+    validations:
+      required: true

@@ -1,0 +1,81 @@
+name: Bug report
+description: Something in Kairos doesn't work as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! **If this is a security problem** (creating coins, double spending,
+        crashing other nodes, breaking wallet encryption), please don't post it here:
+        use **Security → Report a vulnerability** instead.
+  - type: dropdown
+    id: area
+    attributes:
+      label: What is affected?
+      options:
+        - Node won't start or crashes
+        - Syncing or connecting to peers
+        - Mining
+        - Wallet or sending coins
+        - Nodes disagree about the chain
+        - RPC / command line
+        - Server setup script
+        - Documentation
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what happened, and what did you expect instead?
+      placeholder: "I typed `send tkrs1... 5` and got ..."
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start the node with `python -m kairos --testnet node --mine`
+        2. ...
+  - type: input
+    id: version
+    attributes:
+      label: Kairos version
+      description: Shown when the node starts, or run `python -m kairos --testnet rpc getnetworkinfo`.
+      placeholder: "0.3.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: network
+    attributes:
+      label: Network
+      options:
+        - testnet
+        - regtest
+        - mainnet parameters
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Operating system and Python version
+      placeholder: "macOS 15, Python 3.13"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log output
+      description: Paste the relevant node output. On a server, `journalctl -u kairos -n 100`.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I removed any wallet passphrase or backup code (`krsseed1...`) from what I pasted.
+          required: true
+        - label: This is not a security vulnerability (those go to Security → Report a vulnerability).
+          required: true

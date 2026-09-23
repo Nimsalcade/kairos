@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kairos-node"
+version = "0.3.0"
+description = "Kairos: a peer-to-peer electronic cash system built to last (experimental testnet)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = []
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+]
+
+[project.optional-dependencies]
+fast = ["coincurve>=18"]
+
+[project.scripts]
+kairos = "kairos.__main__:main"
+
+[tool.setuptools]
+packages = ["kairos"]
