@@ -14,6 +14,12 @@ No consensus change.
   coin count, how many transactions, blocks and days a sweep takes, computed
   from exact serialized sizes. Example:
   `kairos --testnet rpc getpqstats 6048 6300 '[1000, 1000000]'`.
+- `docs/pq-scaling.md`: post-quantum scaling options compared with sizes
+  measured by `tools/pq_sizes.py` (real signatures for Lamport, compressed
+  Lamport, WOTS+, XMSS-style trees, SLH-DSA and ML-DSA; standard formulas
+  checked against FIPS 204/205 tables). Recommends commit-delay-reveal as the
+  rule the quantum switch enables, SLH-DSA-SHA2-128s as the fallback key, and
+  versioned outputs, all for testnet 3.
 - `docs/rehearsal-testnet2.md`: report skeleton for the quantum-switch
   rehearsal on testnet 2, with the timeline to lock-in at 4032 and the
   measurement sections to fill after activation at 6048.
