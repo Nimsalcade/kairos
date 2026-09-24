@@ -205,6 +205,16 @@ class TestChain(unittest.TestCase):
         mine(blk.header)
         self.assertEqual(self.chain.submit_block(blk), "invalid: utxo_root mismatch")
 
+    def test_false_base_fee_rejected(self):
+        """The header commits to the base fee of the next block (fast-sync state)."""
+        self.fund_alice(1)
+        self.clock.t += 120
+        blk = self.chain.create_block(self.alice.mining_address)
+        self.assertEqual(blk.header.fee, self.chain.params.min_base_fee)
+        blk.header.fee += 1
+        mine(blk.header)
+        self.assertEqual(self.chain.submit_block(blk), "invalid: base fee mismatch")
+
     def test_immature_coinbase(self):
         chain, clock = new_chain(coinbase_maturity=5)
         w = Wallet(chain.params, seed=b"c" * 32)
@@ -287,7 +297,7 @@ class TestMainnetGenesis(unittest.TestCase):
     def test_genesis_and_fair_launch(self):
         c = Chain(MAINNET)
         self.assertEqual(c.genesis.hash.hex(),
-                         "00000681b19ce9c7fc7c0f8a1ad2cccf047455193863f4eeaf95185c3193790d")
+                         "00000d5c177c8ee763ea601553a3248f2bbec871c4968770e009edcc32111aea")
         self.assertEqual(c.expected_bits(c.tip), 0x1D00FFFF)
         self.assertIn(b"money should outlive", c.blocks[c.genesis.hash].txs[0].inputs[0].witness)
 
@@ -295,7 +305,7 @@ class TestMainnetGenesis(unittest.TestCase):
         from kairos.params import TESTNET
         c = Chain(TESTNET)
         self.assertEqual(c.genesis.hash.hex(),
-                         "00000c4ef85d7acc2581086d8a1b38789b661dbbcd9452e7bb6e3b666731aa89")
+                         "000008fa96a695a8e30751146a123e55ee730693362e0acba2c43ce704b73c51")
         self.assertNotEqual(TESTNET.chain_id, MAINNET.chain_id)
         self.assertNotEqual(TESTNET.magic, MAINNET.magic)
 

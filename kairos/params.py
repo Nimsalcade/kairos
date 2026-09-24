@@ -65,6 +65,15 @@ def subsidy(params: ChainParams, generated: int) -> int:
     return max(params.tail_reward, (params.emission_supply - generated) >> params.emission_speed)
 
 
+def generated_at(params: ChainParams, height: int) -> int:
+    """Total subsidy issued by the end of `height`: a pure function of the
+    schedule, so a node starting from a UTXO snapshot can recompute it."""
+    g = 0
+    for _ in range(height):
+        g += subsidy(params, g)
+    return g
+
+
 # ------------------------------------------------ compact target encoding
 
 def bits_to_target(bits: int) -> int:
@@ -127,7 +136,7 @@ MAINNET = ChainParams(
     pow_limit=(1 << 236) - 1,
     genesis_bits=0x1E0FFFFF,
     genesis_time=1790035200,          # placeholder: re-mined with a fresh message at launch (LAUNCH.md)
-    genesis_nonce=338424,
+    genesis_nonce=225232,
     asert_anchor_bits=0x1D00FFFF,     # block 1 starts at Bitcoin's 2009 "difficulty 1"
     deployments=(PQ_DEPLOYMENT,),
 )
@@ -137,7 +146,7 @@ MAINNET = ChainParams(
 TESTNET = replace(
     MAINNET, name="test", hrp="tkrs", chain_id=b"KRS\x03", magic=b"\x0c\x4b\x52\x53",
     genesis_time=1790208000,          # 2026-09-24T00:00:00Z
-    genesis_nonce=705116,
+    genesis_nonce=406758,
     coinbase_maturity=20,
     asert_anchor_bits=0x1E03FFFF,     # CPU-friendly start; ASERT raises it as miners join
     seeds=("95.179.255.186:19333", "45.76.176.39:19333", "207.246.114.19:19333"),
@@ -146,7 +155,7 @@ TESTNET = replace(
 REGTEST = replace(
     MAINNET, name="regtest", hrp="krt", chain_id=b"KRT\x01", magic=b"\xfa\x4b\x52\x54",
     pow_limit=(1 << 252) - 1, genesis_bits=0x200FFFFF, no_retarget=True,
-    coinbase_maturity=2, genesis_nonce=14, asert_anchor_bits=None,
+    coinbase_maturity=2, genesis_nonce=6, asert_anchor_bits=None,
     deployments=(replace(PQ_DEPLOYMENT, window=8, threshold=6),),
 )
 

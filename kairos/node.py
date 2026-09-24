@@ -624,7 +624,7 @@ class Node:
             if self.queue_for is not best:
                 self.queue = chain.missing_blocks(limit=1 << 30)
                 self.queue_for = best
-            while self.queue and (self.queue[0].has_data or self.queue[0].invalid):
+            while self.queue and (self.queue[0].has_data or self.queue[0].chain_data or self.queue[0].invalid):
                 self.queue.pop(0)
             if not self.queue:
                 return
@@ -633,7 +633,7 @@ class Node:
             random.shuffle(peers)
             want = {}
             for idx in self.queue[:len(peers) * BLOCKS_IN_FLIGHT_PER_PEER + 64]:
-                if idx.hash in self.inflight or idx.has_data:
+                if idx.hash in self.inflight or idx.has_data or idx.chain_data:
                     continue
                 for p in peers:
                     if len(p.inflight) < BLOCKS_IN_FLIGHT_PER_PEER and p.height >= idx.height:

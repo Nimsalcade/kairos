@@ -217,9 +217,12 @@ class Wallet:
 
     def rescan(self, chain, gap: int = GAP_LIMIT):
         with chain.lock:
-            seen = set()
+            seen = {c.address for c in chain.utxos.values()}
             for idx in chain.active[1:]:
-                for tx in chain.blocks[idx.hash].txs:
+                blk = chain.blocks.get(idx.hash)          # None below a fast-sync snapshot
+                if blk is None:
+                    continue
+                for tx in blk.txs:
                     for o in tx.outputs:
                         seen.add(o.address)
             while True:
@@ -235,7 +238,10 @@ class Wallet:
     def _on_chain_event(self, event, idx):
         if event != "tip":
             return
-        blk = self.chain.blocks[idx.hash]
+        blk = self.chain.blocks.get(idx.hash)
+        if blk is None:                                    # a fast-sync snapshot was adopted
+            self.rescan(self.chain)
+            return
         hit = False
         for tx in blk.txs:
             for o in tx.outputs:

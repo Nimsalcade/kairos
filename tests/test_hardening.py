@@ -792,3 +792,163 @@ class TestFastRestart(unittest.TestCase):
             self.assertEqual(c3.tip.hash, rival.tip.hash)
             self.assertEqual(c3.utxos, rival.utxos)
             c3.close()
+
+
+class TestFastSync(unittest.TestCase):
+    """A new node adopts a UTXO snapshot only if it matches the utxo_root of a
+    header whose proof-of-work it has verified, then downloads only newer blocks."""
+
+    @staticmethod
+    def write_snapshot(path, chain_id, block_hash, height, coins):
+        from kairos.chain import UTXO_MAGIC, coin_bytes
+        from kairos.crypto import sha256
+        body = UTXO_MAGIC + chain_id + block_hash + struct.pack("<IQ", height, len(coins))
+        body += b"".join(coin_bytes(op, c) for op, c in coins.items())
+        with open(path, "wb") as f:
+            f.write(body + sha256(body))
+
+    def build_source(self, d, n=12):
+        clock = Clock(REGTEST.genesis_time + 1)
+        a = Chain(REGTEST, datadir=d, now=clock)
+        w = Wallet(REGTEST, seed=b"a" * 32)
+        w.attach(a)
+        for i in range(n):
+            if i >= 6:
+                a.accept_tx(w.create_tx(a, Wallet(REGTEST, seed=b"z" * 32).mining_address, COIN, tip_per_byte=3))
+            mine_block(a, clock, w.mining_address)
+        return a, clock, w
+
+    def test_offline_import_verifies_commitment(self):
+        with tempfile.TemporaryDirectory() as d:
+            a, clock, w = self.build_source(os.path.join(d, "a"))
+            snap = os.path.join(d, "utxo.snap")
+            info = a.export_utxo_snapshot(snap)
+            self.assertEqual(info["height"], 12)
+            self.assertEqual(info["utxo_root"], a.tip.header.utxo_root.hex())
+
+            b = Chain(REGTEST, datadir=os.path.join(d, "b"), now=clock)
+            with self.assertRaisesRegex(ValueError, "unknown"):
+                b.import_utxo_snapshot(snap)                 # headers first
+            blocks = a.blocks_after([a.genesis.hash])
+            for blk in blocks:
+                self.assertEqual(b.submit_header(blk.header, blk.auxpow), "accepted")
+            self.assertEqual((b.height, b.best_header.height), (0, 12))
+
+            # wrong coins for that header: refused
+            bad = os.path.join(d, "bad.snap")
+            coins = dict(a.utxos)
+            op = next(iter(coins))
+            coins[op] = replace(coins[op], value=coins[op].value + 1)
+            self.write_snapshot(bad, REGTEST.chain_id, a.tip.hash, 12, coins)
+            with self.assertRaisesRegex(ValueError, "commitment"):
+                b.import_utxo_snapshot(bad)
+            # damaged file: refused
+            with open(snap, "rb") as f:
+                raw = bytearray(f.read())
+            raw[60] ^= 1
+            with open(bad, "wb") as f:
+                f.write(raw)
+            with self.assertRaisesRegex(ValueError, "checksum"):
+                b.import_utxo_snapshot(bad)
+            # other network: refused
+            self.write_snapshot(bad, b"XXXX", a.tip.hash, 12, a.utxos)
+            with self.assertRaisesRegex(ValueError, "another network"):
+                b.import_utxo_snapshot(bad)
+            self.assertEqual(b.height, 0)
+
+            target = b.import_utxo_snapshot(snap)
+            self.assertEqual(b.height, 12)
+            self.assertEqual(b.tip.hash, a.tip.hash)
+            self.assertEqual(b.utxos, a.utxos)
+            self.assertEqual(b.tip.muhash, a.tip.muhash)
+            self.assertEqual((b.tip.generated, b.tip.burned, b.tip.next_base_fee),
+                             (a.tip.generated, a.tip.burned, a.tip.next_base_fee))
+            self.assertEqual(b.supply(), a.supply())
+            self.assertIsNone(b.blocks.get(blocks[3].hash))     # history was never downloaded
+            self.assertEqual(b.assumed_height, 12)
+            with self.assertRaisesRegex(ValueError, "already past"):
+                b.import_utxo_snapshot(snap)
+
+            # the chain continues normally from the snapshot
+            for _ in range(3):
+                blk = mine_block(a, clock, w.mining_address)
+                self.assertEqual(b.submit_block(blk), "accepted")
+            self.assertEqual(b.utxos, a.utxos)
+            self.assertEqual(b.tip.header.utxo_root, a.tip.header.utxo_root)
+            # a wallet attached afterwards finds its coins from the UTXO set alone
+            w2 = Wallet(REGTEST, seed=b"a" * 32)
+            w2.attach(b)
+            self.assertEqual(w2.balance(b), w.balance(a))
+
+            # nothing below the snapshot can be reorganised
+            rival, rclock = new_chain()
+            for blk in blocks[:11]:
+                rival.submit_block(blk)
+            rclock.t = clock.t
+            fork = mine_block(rival, rclock, Wallet(REGTEST, seed=b"r" * 32).mining_address)
+            self.assertEqual(b.submit_block(fork), "invalid: fork below the UTXO snapshot this node started from")
+
+            # restart: assumed history comes back from headers.dat, state from chainstate.dat
+            b.close()
+            b2 = Chain(REGTEST, datadir=os.path.join(d, "b"), now=clock)
+            self.assertEqual(b2.height, 15)
+            self.assertEqual(b2.assumed_height, 12)
+            self.assertEqual(b2.utxos, a.utxos)
+            self.assertEqual(b2.tip.muhash, a.tip.muhash)
+            blk = mine_block(a, clock, w.mining_address)
+            self.assertEqual(b2.submit_block(blk), "accepted")
+            b2.close()
+            # without headers.dat the snapshot cannot be trusted: node restarts from genesis
+            os.remove(os.path.join(d, "b", "headers.dat"))
+            b3 = Chain(REGTEST, datadir=os.path.join(d, "b"), now=clock)
+            self.assertEqual(b3.height, 0)
+            b3.close()
+            a.close()
+
+    def test_fast_sync_over_the_network(self):
+        from kairos.rpc import RPCServer, call
+        with tempfile.TemporaryDirectory() as d:
+            src = Node(Chain(REGTEST, datadir=os.path.join(d, "a")), wallet=Wallet(REGTEST, seed=b"s" * 32))
+            src.wallet.attach(src.chain)
+            dst_chain = Chain(REGTEST, datadir=os.path.join(d, "b"))
+            dst = Node(dst_chain, wallet=Wallet(REGTEST, seed=b"d" * 32))
+            rpc = RPCServer(dst, os.path.join(d, "b"))
+            try:
+                for _ in range(10):
+                    src.mine_one()
+                snap = os.path.join(d, "utxo.snap")
+                src.chain.export_utxo_snapshot(snap)
+                # a peer that only serves headers, so the new node knows the chain but has no blocks
+                hdrs = [Block(b.header, [], None).serialize().hex()
+                        for b in src.chain.blocks_after([src.chain.genesis.hash])]
+                s = socket.create_connection(("127.0.0.1", dst.port), timeout=5)
+                s.sendall((json.dumps({"magic": REGTEST.magic.hex(), "type": "version", "proto": 4,
+                                       "genesis": dst_chain.genesis.hash.hex(), "height": 10,
+                                       "nonce": 77}) + "\n").encode())
+                s.sendall((json.dumps({"magic": REGTEST.magic.hex(), "type": "headers", "data": hdrs}) + "\n").encode())
+                wait(lambda: dst_chain.best_header.height == 10, 10)
+                self.assertEqual(dst_chain.height, 0)
+                c = lambda m, *p: call(os.path.join(d, "b"), rpc.port, m, list(p))
+                r = c("loadutxoset", snap)["result"]
+                self.assertEqual(r["height"], 10)
+                self.assertEqual(dst_chain.height, 10)
+                s.close()
+                info = c("getblockchaininfo")["result"]
+                self.assertEqual((info["blocks"], info["assumed_height"]), (10, 10))
+                # now talk to the real node: only newer blocks are downloaded
+                dst.connect("127.0.0.1", src.port)
+                for _ in range(4):
+                    src.mine_one()
+                wait(lambda: dst_chain.height == 14, 20)
+                self.assertEqual(dst_chain.tip.hash, src.chain.tip.hash)
+                self.assertEqual(dst_chain.utxos, src.chain.utxos)
+                old = src.chain.active[5].hash
+                self.assertIsNone(dst_chain.blocks.get(old))
+                self.assertIsNotNone(dst_chain.blocks.get(src.chain.active[12].hash))
+                self.assertEqual(dst.inflight, {})
+            finally:
+                rpc.stop()
+                dst.stop()
+                src.stop()
+                dst_chain.close()
+                src.chain.close()

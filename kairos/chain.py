@@ -14,7 +14,7 @@ from typing import Dict, List, Optional, Tuple
 from .block import Block, BlockHeader, genesis_block, HEADER_SIZE, VERSION_AUXPOW
 from .crypto import MuHash, sha256
 from .params import (ChainParams, Deployment, MAX_MONEY, subsidy, asert_target, target_to_bits,
-                     bits_to_target, block_work, next_base_fee)
+                     bits_to_target, block_work, next_base_fee, generated_at)
 from .tx import (OutPoint, Transaction, TxOut, make_coinbase, verify_witness,
                  write_varint, read_varint)
 
@@ -26,7 +26,9 @@ class ValidationError(Exception):
 RECORD_MAGIC = b"KRSB"
 BLOCK_FILE = "blocks-v3.dat"
 STATE_FILE = "chainstate.dat"
-STATE_MAGIC = b"KRSS\x01"
+STATE_MAGIC = b"KRSS\x02"
+HEADERS_FILE = "headers.dat"         # headers of assumed-valid history (fast sync)
+UTXO_MAGIC = b"KRSU\x01"
 SNAPSHOT_EVERY = 2000                # blocks connected between automatic snapshots
 MAX_HEADERS = 2000                   # per headers message
 MAX_SIG_CACHE = 200_000
@@ -53,7 +55,7 @@ def coin_bytes(op: OutPoint, c: Coin) -> bytes:
 class BlockIndex:
     __slots__ = ("hash", "header", "parent", "height", "chainwork", "invalid",
                  "muhash", "generated", "burned", "next_base_fee", "connected", "why", "vbcache",
-                 "has_data", "chain_data")
+                 "has_data", "chain_data", "assumed", "auxpow")
 
     def __init__(self, header: BlockHeader, parent: Optional["BlockIndex"]):
         self.hash = header.hash
@@ -71,6 +73,8 @@ class BlockIndex:
         self.vbcache = {}           # deployment name -> state of the window starting after this block
         self.has_data = False       # the full block is stored
         self.chain_data = False     # every block from genesis to here is stored: connectable
+        self.assumed = False        # state taken from a verified UTXO snapshot; no data, no undo
+        self.auxpow = None          # merge-mining proof kept for header-only entries
 
     def ancestor(self, height: int) -> Optional["BlockIndex"]:
         x = self
@@ -227,6 +231,7 @@ class Chain:
         self.listeners = []          # callables(event, obj)
         self.signal = set()          # deployment names this miner signals for
         self.children: Dict[bytes, List[BlockIndex]] = {}
+        self.assumed_height = 0      # nothing below this can be reorganised (fast-sync base)
         self.since_snapshot = 0
         self.log = lambda *a: None
 
@@ -261,6 +266,8 @@ class Chain:
         are indexed without re-validation; the rest are replayed. Returns False
         if the snapshot turned out not to match the file (caller reindexes)."""
         snap = None if reindex else self._read_snapshot()
+        if snap is not None and snap["assumed_height"] and not self._load_assumed(snap):
+            return False
         installed = snap is None
         for blk, off, n in self.blocks.scan():
             if not installed:
@@ -282,6 +289,46 @@ class Chain:
         if not installed and not self._install_snapshot(snap):
             return False
         return True
+
+    def _load_assumed(self, snap) -> bool:
+        """Rebuild assumed-valid history from headers.dat (fast-synced nodes)."""
+        path = os.path.join(self.datadir, HEADERS_FILE)
+        if not os.path.exists(path):
+            self.log("headers.dat missing; the UTXO snapshot must be imported again")
+            return False
+        store = BlockStore(path)
+        for blk, _, _ in store.scan():
+            if self.submit_header(blk.header, blk.auxpow) != "accepted":
+                return False
+            if blk.header.height == snap["assumed_height"]:
+                break
+        target = self.index.get(snap["active"].get(snap["assumed_height"]))
+        if target is None or target.height != snap["assumed_height"]:
+            self.log("headers.dat does not match chainstate; rebuilding")
+            return False
+        self._assume(target, snap["state"][target.hash], None)
+        return True
+
+    def _assume(self, target: BlockIndex, state, muhash):
+        """Adopt genesis..target as the active chain without block data."""
+        path = []
+        x = target
+        while x is not self.tip:
+            path.append(x)
+            x = x.parent
+        for idx in reversed(path):
+            idx.assumed = idx.connected = idx.chain_data = True
+            self.candidates.add(idx)
+            self.active.append(idx)
+        target.generated, target.burned, target.next_base_fee = state
+        target.muhash = muhash
+        self.assumed_height = target.height
+        self.undo = {}
+        if target.chainwork > self.best.chainwork:
+            self.best = target
+        for ch in self.children.get(target.hash, ()):    # data that arrived early is now connectable
+            if ch.has_data:
+                self._mark_data(ch)
 
     def _install_snapshot(self, snap) -> bool:
         if self.tip.hash != snap["tip"] or self.height != len(snap["active"]) - 1:
@@ -309,7 +356,7 @@ class Chain:
         with self.lock:
             path = os.path.join(self.datadir, STATE_FILE)
             tmp = path + ".tmp"
-            parts = [STATE_MAGIC, self.tip.hash, struct.pack("<I", len(self.active))]
+            parts = [STATE_MAGIC, self.tip.hash, struct.pack("<II", self.assumed_height, len(self.active))]
             for idx in self.active:
                 parts.append(idx.hash + struct.pack("<QQQ", idx.generated, idx.burned, idx.next_base_fee))
             parts.append(self.tip.muhash.to_bytes(384, "little"))
@@ -353,7 +400,7 @@ class Chain:
                 return op, Coin(value, raw[44:76], height, cb)
 
             tip = take(32)
-            n = struct.unpack("<I", take(4))[0]
+            assumed_height, n = struct.unpack("<II", take(8))
             active, state = {}, {}
             for height in range(n):
                 h = take(32)
@@ -367,8 +414,10 @@ class Chain:
                 undo[h] = dict(coin() for _ in range(struct.unpack("<I", take(4))[0]))
             if active.get(n - 1) != tip:
                 raise ValueError("tip")
+            if assumed_height >= n:
+                raise ValueError("assumed height")
             return {"tip": tip, "active": active, "state": state, "muhash": muhash,
-                    "utxos": utxos, "undo": undo}
+                    "utxos": utxos, "undo": undo, "assumed_height": assumed_height}
         except (ValueError, struct.error, KeyError) as e:
             self.log(f"ignoring chainstate snapshot: {e}")
             return None
@@ -616,6 +665,8 @@ class Chain:
             last = max(cps)
             if h.height <= last and not self.on_active_chain(parent):
                 raise ValidationError("fork below last checkpoint")
+        if h.height <= self.assumed_height:
+            raise ValidationError("fork below the UTXO snapshot this node started from")
         if h.bits != self.expected_bits(parent):
             raise ValidationError("bad difficulty bits")
         if h.time <= self.median_time_past(parent):
@@ -686,6 +737,7 @@ class Chain:
             except ValidationError as e:
                 return f"invalid: {e}"
             idx = BlockIndex(hdr, parent)
+            idx.auxpow = auxpow
             self.index[hsh] = idx
             self.children.setdefault(parent.hash, []).append(idx)
             if idx.chainwork > self.best_header.chainwork:
@@ -792,6 +844,8 @@ class Chain:
         digest, mh_value = self.utxo_digest(parent.muhash, view)
         if digest != blk.header.utxo_root:
             raise ValidationError("utxo_root mismatch")
+        if blk.header.fee != next_base_fee(p, base_fee, blk.size):
+            raise ValidationError("base fee mismatch")
         # --- commit (nothing below may fail)
         for op in view.spent:
             del self.utxos[op]
@@ -807,6 +861,8 @@ class Chain:
 
     def _disconnect_tip(self) -> Block:
         idx = self.tip
+        if idx.assumed:
+            raise RuntimeError("cannot reorganise below the UTXO snapshot base")
         blk = self.blocks[idx.hash]
         spent = self.undo.pop(idx.hash)
         if idx.parent.muhash is None:
@@ -954,9 +1010,10 @@ class Chain:
             utxo_root, _ = self.utxo_digest(parent.muhash, view)
             tm = max(t if t is not None else self.now(), self.median_time_past(parent) + 1)
             hdr = BlockHeader(self.block_version(parent, auxpow), height, parent.hash, b"", utxo_root,
-                              tm, self.expected_bits(parent), 0)
+                              tm, self.expected_bits(parent), 0, 0)
             blk = Block(hdr, [cb] + chosen)
             hdr.tx_root = blk.compute_tx_root()
+            hdr.fee = next_base_fee(p, base_fee, blk.size)
             return blk
 
     # ------------------------------------------------------------ queries
@@ -989,7 +1046,10 @@ class Chain:
                     break
             out = []
             for i in self.active[start + 1:start + 1 + limit]:
-                aux = self.blocks[i.hash].auxpow if i.header.version & VERSION_AUXPOW else None
+                aux = None
+                if i.header.version & VERSION_AUXPOW:
+                    blk = self.blocks.get(i.hash)
+                    aux = blk.auxpow if blk is not None else i.auxpow
                 out.append(Block(i.header, [], aux))
             return out
 
@@ -1013,3 +1073,104 @@ class Chain:
         return {"height": t.height, "generated": t.generated, "burned": t.burned,
                 "circulating": t.generated - t.burned, "next_base_fee": t.next_base_fee,
                 "next_subsidy": subsidy(self.params, t.generated)}
+
+    # ------------------------------------------------------- fast sync
+    # Every header commits to the UTXO set (utxo_root) and the next base fee,
+    # so a new node can take a snapshot of the set from anyone, check it against
+    # a header it has verified proof-of-work for, and start from there. The
+    # history below the snapshot is "assumed valid": its headers are kept, its
+    # blocks are never downloaded and nothing below it can be reorganised.
+    def export_utxo_snapshot(self, path: str) -> dict:
+        with self.lock:
+            t = self.tip
+            parts = [UTXO_MAGIC, self.params.chain_id, t.hash, struct.pack("<IQ", t.height, len(self.utxos))]
+            parts.extend(coin_bytes(op, c) for op, c in self.utxos.items())
+            body = b"".join(parts)
+            tmp = path + ".tmp"
+            with open(tmp, "wb") as f:
+                f.write(body + sha256(body))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+            return {"hash": t.hash.hex(), "height": t.height, "coins": len(self.utxos),
+                    "bytes": len(body) + 32, "utxo_root": t.header.utxo_root.hex()}
+
+    @staticmethod
+    def read_utxo_snapshot(path: str):
+        with open(path, "rb") as f:
+            data = f.read()
+        if len(data) < len(UTXO_MAGIC) + 4 + 32 + 12 + 32 or sha256(data[:-32]) != data[-32:]:
+            raise ValueError("snapshot file is damaged (checksum)")
+        if not data.startswith(UTXO_MAGIC):
+            raise ValueError("not a Kairos UTXO snapshot")
+        pos = len(UTXO_MAGIC)
+        chain_id = data[pos:pos + 4]
+        block_hash = data[pos + 4:pos + 36]
+        height, n = struct.unpack("<IQ", data[pos + 36:pos + 48])
+        pos += 48
+        if pos + 81 * n != len(data) - 32:
+            raise ValueError("snapshot file is damaged (length)")
+        coins = {}
+        mh = MuHash()
+        total = 0
+        for _ in range(n):
+            raw = data[pos:pos + 81]
+            pos += 81
+            op = OutPoint(raw[:32], struct.unpack("<I", raw[32:36])[0])
+            value = struct.unpack("<Q", raw[36:44])[0]
+            h, cb = struct.unpack("<I?", raw[76:81])
+            if op in coins or h > height or not 0 <= value <= MAX_MONEY:
+                raise ValueError("snapshot file is inconsistent")
+            coins[op] = Coin(value, raw[44:76], h, cb)
+            total += value
+            mh.insert(raw)
+        if total > MAX_MONEY:
+            raise ValueError("snapshot file is inconsistent")
+        return {"chain_id": chain_id, "hash": block_hash, "height": height, "coins": coins,
+                "digest": mh.digest(), "muhash": mh.value(), "total": total}
+
+    def import_utxo_snapshot(self, path: str) -> BlockIndex:
+        """Verify a snapshot against the header it names and adopt it as our state.
+        Requires the header to be known (sync headers first) and to extend our tip."""
+        snap = self.read_utxo_snapshot(path)
+        with self.lock:
+            if snap["chain_id"] != self.params.chain_id:
+                raise ValueError("snapshot is for another network")
+            target = self.index.get(snap["hash"])
+            if target is None:
+                raise ValueError("snapshot block unknown: let the node sync headers first")
+            if target.invalid or target.height != snap["height"]:
+                raise ValueError("snapshot block is not valid")
+            if target.height <= self.height:
+                raise ValueError("this node is already past the snapshot height")
+            if target.ancestor(self.height) is not self.tip:
+                raise ValueError("snapshot is not on this node's chain")
+            if snap["digest"] != target.header.utxo_root:
+                raise ValueError("snapshot does not match the header's UTXO commitment")
+            generated = generated_at(self.params, target.height)
+            state = (generated, generated - snap["total"], target.header.fee)
+            # --- commit
+            if self.datadir:
+                store = BlockStore(os.path.join(self.datadir, HEADERS_FILE))
+                if os.path.exists(store.path):
+                    os.remove(store.path)
+                store.open()
+                x, path_up = target, []
+                while x is not None and x.height > 0:
+                    path_up.append(x)
+                    x = x.parent
+                for idx in reversed(path_up):
+                    aux = idx.auxpow
+                    blk = self.blocks.get(idx.hash)
+                    if blk is not None:
+                        aux = blk.auxpow
+                    store.put(Block(idx.header, [], aux), persist=True)
+                store.close()
+            self.utxos = snap["coins"]
+            self._assume(target, state, snap["muhash"])
+            self._activate_best_chain()
+            for fn in self.listeners:
+                fn("tip", target)
+            if self.datadir:
+                self.snapshot()
+            return target

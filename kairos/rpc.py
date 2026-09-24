@@ -151,7 +151,8 @@ class RPCServer:
     def rpc_getblockchaininfo(self):
         t = self.chain.tip
         s = self.chain.supply()
-        return {"chain": self.chain.params.name, "blocks": t.height, "headers": t.height,
+        return {"chain": self.chain.params.name, "blocks": t.height,
+                "headers": self.chain.best_header.height, "assumed_height": self.chain.assumed_height,
                 "bestblockhash": t.hash.hex(), "difficulty": self._difficulty(t.header.bits),
                 "time": t.header.time, "mediantime": self.chain.median_time_past(t),
                 "chainwork": f"{t.chainwork:064x}", "utxo_root": t.header.utxo_root.hex(),
@@ -186,6 +187,7 @@ class RPCServer:
                 "previousblockhash": hd.prev_hash.hex(), "nextblockhash": nxt,
                 "tx_root": hd.tx_root.hex(), "utxo_root": hd.utxo_root.hex(), "time": hd.time,
                 "bits": f"{hd.bits:08x}", "nonce": hd.nonce, "difficulty": self._difficulty(hd.bits),
+                "next_base_fee": hd.fee,
                 "chainwork": f"{idx.chainwork:064x}"}
 
     def rpc_getblock(self, h, verbosity=1):
@@ -196,6 +198,17 @@ class RPCServer:
         out = self.rpc_getblockheader(h)
         out.update(size=blk.size, auxpow=blk.auxpow is not None, tx=[t.txid.hex() for t in blk.txs])
         return out
+
+    def rpc_dumputxoset(self, path):
+        return self.chain.export_utxo_snapshot(str(path))
+
+    def rpc_loadutxoset(self, path):
+        target = self.chain.import_utxo_snapshot(str(path))
+        with self.node.qlock:
+            self.node.queue_for = None                # recompute what is left to download
+        self.node._fetch_blocks()
+        return {"hash": target.hash.hex(), "height": target.height,
+                "coins": len(self.chain.utxos), "next_base_fee": target.next_base_fee}
 
     def rpc_gettxoutsetinfo(self):
         t = self.chain.tip
