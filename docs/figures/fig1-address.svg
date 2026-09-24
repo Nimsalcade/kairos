@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="320" viewBox="0 0 640 320" font-family="Helvetica, Arial, sans-serif" fill="#1a1a1a">
+<rect width="640" height="320" fill="#ffffff"/>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1a1a1a"/></marker></defs>
+<rect x="40" y="30" width="220" height="50" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.2"/>
+<text x="150" y="52" font-size="13" text-anchor="middle" font-weight="bold" font-style="normal" fill="#1a1a1a">Schnorr public key</text>
+<text x="150" y="70" font-size="11" text-anchor="middle" font-weight="normal" font-style="italic" fill="#1a1a1a">32 bytes, BIP340</text>
+<rect x="380" y="30" width="220" height="50" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.2"/>
+<text x="490" y="52" font-size="13" text-anchor="middle" font-weight="bold" font-style="normal" fill="#1a1a1a">Lamport public key</text>
+<text x="490" y="70" font-size="11" text-anchor="middle" font-weight="normal" font-style="italic" fill="#1a1a1a">16 KiB, hash-based</text>
+<rect x="380" y="120" width="220" height="36" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.2"/>
+<text x="490" y="143" font-size="13" text-anchor="middle" font-weight="normal" font-style="normal" fill="#1a1a1a">pq_root = H(Lamport key)</text>
+<line x1="490" y1="80" x2="490" y2="119" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow)"/>
+<rect x="200" y="200" width="240" height="50" fill="#e8eef6" stroke="#1a1a1a" stroke-width="1.6"/>
+<text x="320" y="222" font-size="13" text-anchor="middle" font-weight="bold" font-style="normal" fill="#1a1a1a">address</text>
+<text x="320" y="240" font-size="11" text-anchor="middle" font-weight="normal" font-style="italic" fill="#1a1a1a">H(Schnorr key || pq_root)</text>
+<line x1="150" y1="80" x2="150" y2="225" stroke="#1a1a1a" stroke-width="1.2"/>
+<line x1="150" y1="225" x2="199" y2="225" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow)"/>
+<line x1="490" y1="156" x2="490" y2="225" stroke="#1a1a1a" stroke-width="1.2"/>
+<line x1="490" y1="225" x2="441" y2="225" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arrow)"/>
+<text x="320" y="285" font-size="12" text-anchor="middle" font-weight="normal" font-style="italic" fill="#1a1a1a">today: spend with a 64-byte Schnorr signature</text>
+<text x="320" y="304" font-size="12" text-anchor="middle" font-weight="normal" font-style="italic" fill="#1a1a1a">quantum emergency: spend with a Lamport signature (section 10)</text>
+</svg>
