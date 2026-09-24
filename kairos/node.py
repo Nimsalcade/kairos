@@ -43,7 +43,7 @@ from .tx import Transaction
 
 PROTOCOL_VERSION = 4              # 0.4.0: testnet 2 (new sighash, soft-fork signalling)
 MIN_PROTOCOL_VERSION = 4          # older nodes are on another chain; they are disconnected, not banned
-AGENT = "/kairos:0.4.0/"
+AGENT = "/kairos:0.4.1/"
 MAX_OUTBOUND = 8
 MAX_ADDR_PER_MSG = 1000
 CONNMAN_INTERVAL = 2

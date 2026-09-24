@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.4.1 — post-quantum sends
+
+No consensus change: 0.4.1 runs on testnet 2 alongside 0.4.0 nodes.
 
 - Fix: after the quantum switch activates, the console `send` and RPC
   `sendtoaddress` signed with Schnorr and every payment was rejected as
