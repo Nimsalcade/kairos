@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="744" height="294" viewBox="0 0 744 294" font-family="Helvetica, Arial, sans-serif" fill="#1a1a1a">
+<rect width="744" height="294" fill="#ffffff"/>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1a1a1a"/></marker></defs>
+<rect x="20" y="44" width="196" height="208" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.4"/>
+<text x="118.0" y="64" font-size="13" text-anchor="middle" font-weight="bold" font-style="normal" fill="#1a1a1a">Block n-1</text>
+<rect x="30" y="74" width="176" height="20" fill="#ffffff" stroke="#1a1a1a" stroke-width="0.9"/>
+<text x="118.0" y="89" font-size="12" text-anchor="middle" font-weight="normal" font-style="normal" fill="#1a1a1a">version 4  ·  height 4</text>
+<rect x="30" y="98" width="176" height="20" fill="#ffffff" stroke="#1a1a1a" stroke-width="0.9"/>
+<text x="118.0" y="113" font-size="12" text-anchor="middle" font-weight="normal" font-style="normal" fill="#1a1a1a">prev 32</text>
+<rect x="30" y="122" width="176" height="20" fill="#ffffff" stroke="#1a1a1a" stroke-width="0.9"/>
+<text x="118.0" y="137" font-size="12" text-anchor="middle" font-weight="normal" font-style="normal" fill="#1a1a1a">tx_root 32</text>
+<rect x="30" y="146" width="176" height="20" fill="#e8eef6" stroke="#1a1a1a" stroke-width="0.9"/>
+<text x="118.0" y="161" font-size="12" text-anchor="middle" font-weight="normal" font-style="normal" fill="#1a1a1a">utxo_root 32</text>
+<rect x="30" y="170" width="176" height="20" fill="#ffffff" stroke="#1a1a1a" stroke-width="0.9"/>
+<text x="118.0" y="185" font-size="12" text-anchor="middle" font-weight="normal" font-style="normal" fill="#1a1a1a">time 8  ·  bits 4</text>
+<rect x="30" y="194" width="176" height="20" fill="#e8eef6" stroke="#1a1a1a" stroke-width="0.9"/>
+<text x="118.0" y="209" font-size="12" text-anchor="middle" font-weight="normal" font-style="normal" fill="#1a1a1a">fee 8</text>
+<rect x="30" y="218" width="176" height="20" fill="#ffffff" stroke="#1a1a1a" stroke-width="0.9"/>
+<text x="118.0" y="233" font-size="12" text-anchor="middle" font-weight="normal" font-style="normal" fill="#1a1a1a">nonce 8</text>
+<rect x="274" y="44" width="196" height="208" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.4"/>
+<text x="372.0" y="64" font-size="13" text-anchor="middle" font-weight="bold" font-style="normal" fill="#1a1a1a">Block n</text>
+<rect x="284" y="74" width="176" height="20" fill="#ffffff" stroke="#1a1a1a" stroke-width="0.9"/>
+<text x="372.0" y="89" font-size="12" text-anchor="middle" font-weight="normal" font-style="normal" fill="#1a1a1a">version 4  ·  height 4</text>
+<rect x="284" y="98" width="176" height="20" fill="#ffffff" stroke="#1a1a1a" stroke-width="0.9"/>
+<text x="372.0" y="113" font-size="12" text-anchor="middle" font-weight="normal" font-style="normal" fill="#1a1a1a">prev 32</text>
+<rect x="284" y="122" width="176" height="20" fill="#ffffff" stroke="#1a1a1a" stroke-width="0.9"/>
+<text x="372.0" y="137" font-size="12" text-anchor="middle" font-weight="normal" font-style="normal" fill="#1a1a1a">tx_root 32</text>
+<rect x="284" y="146" width="176" height="20" fill="#e8eef6" stroke="#1a1a1a" stroke-width="0.9"/>
+<text x="372.0" y="161" font-size="12" text-anchor="middle" font-weight="normal" font-style="normal" fill="#1a1a1a">utxo_root 32</text>
+<rect x="284" y="170" width="176" height="20" fill="#ffffff" stroke="#1a1a1a" stroke-width="0.9"/>
+<text x="372.0" y="185" font-size="12" text-anchor="middle" font-weight="normal" font-style="normal" fill="#1a1a1a">time 8  ·  bits 4</text>
+<rect x="284" y="194" width="176" height="20" fill="#e8eef6" stroke="#1a1a1a" stroke-width="0.9"/>
+<text x="372.0" y="209" font-size="12" text-anchor="middle" font-weight="normal" font-style="normal" fill="#1a1a1a">fee 8</text>
+<rect x="284" y="218" width="176" height="20" fill="#ffffff" stroke="#1a1a1a" stroke-width="0.9"/>
+<text x="372.0" y="233" font-size="12" text-anchor="middle" font-weight="normal" font-style="normal" fill="#1a1a1a">nonce 8</text>
+<line x1="284" y1="108" x2="218" y2="108" stroke="#1a1a1a" stroke-width="1.3" marker-end="url(#arrow)"/>
+<rect x="528" y="44" width="196" height="208" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.4"/>
+<text x="626.0" y="64" font-size="13" text-anchor="middle" font-weight="bold" font-style="normal" fill="#1a1a1a">Block n+1</text>
+<rect x="538" y="74" width="176" height="20" fill="#ffffff" stroke="#1a1a1a" stroke-width="0.9"/>
+<text x="626.0" y="89" font-size="12" text-anchor="middle" font-weight="normal" font-style="normal" fill="#1a1a1a">version 4  ·  height 4</text>
+<rect x="538" y="98" width="176" height="20" fill="#ffffff" stroke="#1a1a1a" stroke-width="0.9"/>
+<text x="626.0" y="113" font-size="12" text-anchor="middle" font-weight="normal" font-style="normal" fill="#1a1a1a">prev 32</text>
+<rect x="538" y="122" width="176" height="20" fill="#ffffff" stroke="#1a1a1a" stroke-width="0.9"/>
+<text x="626.0" y="137" font-size="12" text-anchor="middle" font-weight="normal" font-style="normal" fill="#1a1a1a">tx_root 32</text>
+<rect x="538" y="146" width="176" height="20" fill="#e8eef6" stroke="#1a1a1a" stroke-width="0.9"/>
+<text x="626.0" y="161" font-size="12" text-anchor="middle" font-weight="normal" font-style="normal" fill="#1a1a1a">utxo_root 32</text>
+<rect x="538" y="170" width="176" height="20" fill="#ffffff" stroke="#1a1a1a" stroke-width="0.9"/>
+<text x="626.0" y="185" font-size="12" text-anchor="middle" font-weight="normal" font-style="normal" fill="#1a1a1a">time 8  ·  bits 4</text>
+<rect x="538" y="194" width="176" height="20" fill="#e8eef6" stroke="#1a1a1a" stroke-width="0.9"/>
+<text x="626.0" y="209" font-size="12" text-anchor="middle" font-weight="normal" font-style="normal" fill="#1a1a1a">fee 8</text>
+<rect x="538" y="218" width="176" height="20" fill="#ffffff" stroke="#1a1a1a" stroke-width="0.9"/>
+<text x="626.0" y="233" font-size="12" text-anchor="middle" font-weight="normal" font-style="normal" fill="#1a1a1a">nonce 8</text>
+<line x1="538" y1="108" x2="472" y2="108" stroke="#1a1a1a" stroke-width="1.3" marker-end="url(#arrow)"/>
+<text x="372.0" y="28" font-size="12" text-anchor="middle" font-weight="normal" font-style="italic" fill="#1a1a1a">Each header: 132 bytes, fields in serialisation order (sizes in bytes)</text>
+<rect x="222.0" y="265" width="14" height="14" fill="#e8eef6" stroke="#1a1a1a" stroke-width="0.9"/>
+<text x="244.0" y="276" font-size="12" text-anchor="start" font-weight="normal" font-style="normal" fill="#1a1a1a">state committed by proof-of-work: UTXO set and next base fee</text>
+</svg>
