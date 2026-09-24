@@ -25,6 +25,10 @@ class ValidationError(Exception):
 
 RECORD_MAGIC = b"KRSB"
 BLOCK_FILE = "blocks-v3.dat"
+STATE_FILE = "chainstate.dat"
+STATE_MAGIC = b"KRSS\x01"
+SNAPSHOT_EVERY = 2000                # blocks connected between automatic snapshots
+MAX_HEADERS = 2000                   # per headers message
 MAX_SIG_CACHE = 200_000
 MAX_ORPHAN_BYTES = 8 * 1024 * 1024   # unknown-parent blocks kept while we fetch the gap
 ORPHAN_TTL = 600                     # seconds
@@ -48,7 +52,8 @@ def coin_bytes(op: OutPoint, c: Coin) -> bytes:
 
 class BlockIndex:
     __slots__ = ("hash", "header", "parent", "height", "chainwork", "invalid",
-                 "muhash", "generated", "burned", "next_base_fee", "connected", "why", "vbcache")
+                 "muhash", "generated", "burned", "next_base_fee", "connected", "why", "vbcache",
+                 "has_data", "chain_data")
 
     def __init__(self, header: BlockHeader, parent: Optional["BlockIndex"]):
         self.hash = header.hash
@@ -59,11 +64,13 @@ class BlockIndex:
         self.invalid = False
         self.why = ""
         self.connected = False      # state fields below are valid once True
-        self.muhash = 1
-        self.generated = 0
+        self.muhash = None          # MuHash of the UTXO set after this block (known for the tip;
+        self.generated = 0          #   recomputed for ancestors as blocks are disconnected)
         self.burned = 0
         self.next_base_fee = 0
         self.vbcache = {}           # deployment name -> state of the window starting after this block
+        self.has_data = False       # the full block is stored
+        self.chain_data = False     # every block from genesis to here is stored: connectable
 
     def ancestor(self, height: int) -> Optional["BlockIndex"]:
         x = self
@@ -170,8 +177,12 @@ class BlockStore:
             while len(self.cache) > BLOCK_CACHE:
                 self.cache.popitem(last=False)
 
+    def pin(self, blk: Block):
+        """Keep a block in memory permanently (genesis)."""
+        self.mem[blk.hash] = blk
+
     def get(self, h: bytes) -> Optional[Block]:
-        if not self.path:
+        if not self.path or h in self.mem:
             return self.mem.get(h)
         with self.lock:
             blk = self.cache.get(h)
@@ -195,11 +206,11 @@ class BlockStore:
         return blk
 
     def __contains__(self, h: bytes) -> bool:
-        return h in self.mem if not self.path else h in self.offsets
+        return h in self.mem or h in self.offsets
 
 
 class Chain:
-    def __init__(self, params: ChainParams, datadir: Optional[str] = None, now=None):
+    def __init__(self, params: ChainParams, datadir: Optional[str] = None, now=None, reindex: bool = False):
         self.params = params
         self.now = now or (lambda: int(_time.time()))
         self.lock = threading.RLock()
@@ -215,34 +226,179 @@ class Chain:
         self.sig_cache = set()
         self.listeners = []          # callables(event, obj)
         self.signal = set()          # deployment names this miner signals for
+        self.children: Dict[bytes, List[BlockIndex]] = {}
+        self.since_snapshot = 0
+        self.log = lambda *a: None
 
         g = genesis_block(params)
         if not g.header.check_pow():
             raise RuntimeError("genesis block does not satisfy its own proof-of-work")
         gi = BlockIndex(g.header, None)
-        gi.connected = True
+        gi.connected = gi.has_data = gi.chain_data = True
         gi.muhash = MuHash().value()
         gi.next_base_fee = params.min_base_fee
         self.genesis = gi
         self.index[gi.hash] = gi
         self.active: List[BlockIndex] = [gi]
-        self.candidates = {gi}
-        self.best = gi               # most-work candidate seen so far
+        self.candidates = {gi}       # connectable, valid, most-work contenders
+        self.best = gi               # most-work connectable block seen so far
+        self.best_header = gi        # most-work valid header seen so far (data or not)
 
         self.max_mempool_bytes = 64 * 1024 * 1024
         self.mempool_bytes = 0
         self.datadir = datadir
         self.blocks = BlockStore(os.path.join(datadir, BLOCK_FILE) if datadir else None)
-        self.blocks.put(g, persist=False)
+        self.blocks.pin(g)
         if datadir:
             os.makedirs(datadir, exist_ok=True)
-            for blk, off, n in self.blocks.scan():
-                if self.submit_block(blk, persist=False) in ("accepted", "duplicate") or blk.hash in self.index:
-                    self.blocks.remember(blk, off, n)
+            if not self._load(reindex):
+                self.__init__(params, datadir, now, reindex=True)
+                return
             self.blocks.open()
 
+    def _load(self, reindex: bool) -> bool:
+        """Rebuild the index from the block file. Blocks the snapshot vouches for
+        are indexed without re-validation; the rest are replayed. Returns False
+        if the snapshot turned out not to match the file (caller reindexes)."""
+        snap = None if reindex else self._read_snapshot()
+        installed = snap is None
+        for blk, off, n in self.blocks.scan():
+            if not installed:
+                h = blk.header.height
+                if blk.hash == snap["active"].get(h):
+                    ok = self._restore_block(blk, snap)
+                elif h <= len(snap["active"]) - 1:
+                    ok = self._restore_side_block(blk)     # a stale block, kept for reorgs
+                else:
+                    ok = installed = self._install_snapshot(snap)
+                if not ok:
+                    return False
+                if installed:
+                    self.submit_block(blk, persist=False)
+            else:
+                self.submit_block(blk, persist=False)
+            if blk.hash in self.index:
+                self.blocks.remember(blk, off, n)
+        if not installed and not self._install_snapshot(snap):
+            return False
+        return True
+
+    def _install_snapshot(self, snap) -> bool:
+        if self.tip.hash != snap["tip"] or self.height != len(snap["active"]) - 1:
+            self.log("chainstate does not match block file; rebuilding")
+            return False
+        self.utxos = snap["utxos"]
+        self.undo = snap["undo"]
+        self.tip.muhash = snap["muhash"]
+        self._activate_best_chain()
+        return True
+
     def close(self):
+        if self.datadir:
+            self.snapshot()
         self.blocks.close()
+
+    # -- fast restart: the UTXO set and per-block state are written at clean
+    #    shutdown (and every SNAPSHOT_EVERY blocks). On start the block file is
+    #    still scanned so the index is rebuilt, but blocks covered by the
+    #    snapshot are not re-validated. A missing, damaged or mismatching
+    #    snapshot simply means a full replay, which always works.
+    def snapshot(self):
+        if not self.datadir:
+            return
+        with self.lock:
+            path = os.path.join(self.datadir, STATE_FILE)
+            tmp = path + ".tmp"
+            parts = [STATE_MAGIC, self.tip.hash, struct.pack("<I", len(self.active))]
+            for idx in self.active:
+                parts.append(idx.hash + struct.pack("<QQQ", idx.generated, idx.burned, idx.next_base_fee))
+            parts.append(self.tip.muhash.to_bytes(384, "little"))
+            parts.append(struct.pack("<Q", len(self.utxos)))
+            parts.extend(coin_bytes(op, c) for op, c in self.utxos.items())
+            parts.append(struct.pack("<I", len(self.undo)))
+            for h, spent in self.undo.items():
+                parts.append(h + struct.pack("<I", len(spent)))
+                parts.extend(coin_bytes(op, c) for op, c in spent.items())
+            body = b"".join(parts)
+            with open(tmp, "wb") as f:
+                f.write(body + sha256(body))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+            self.since_snapshot = 0
+
+    def _read_snapshot(self):
+        path = os.path.join(self.datadir, STATE_FILE)
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+            if len(data) < 32 or sha256(data[:-32]) != data[-32:] or not data.startswith(STATE_MAGIC):
+                raise ValueError("checksum")
+            pos = len(STATE_MAGIC)
+
+            def take(n):
+                nonlocal pos
+                if pos + n > len(data) - 32:
+                    raise ValueError("truncated")
+                pos += n
+                return data[pos - n:pos]
+
+            def coin():
+                raw = take(81)
+                op = OutPoint(raw[:32], struct.unpack("<I", raw[32:36])[0])
+                value = struct.unpack("<Q", raw[36:44])[0]
+                height, cb = struct.unpack("<I?", raw[76:81])
+                return op, Coin(value, raw[44:76], height, cb)
+
+            tip = take(32)
+            n = struct.unpack("<I", take(4))[0]
+            active, state = {}, {}
+            for height in range(n):
+                h = take(32)
+                active[height] = h
+                state[h] = struct.unpack("<QQQ", take(24))
+            muhash = int.from_bytes(take(384), "little")
+            utxos = dict(coin() for _ in range(struct.unpack("<Q", take(8))[0]))
+            undo = {}
+            for _ in range(struct.unpack("<I", take(4))[0]):
+                h = take(32)
+                undo[h] = dict(coin() for _ in range(struct.unpack("<I", take(4))[0]))
+            if active.get(n - 1) != tip:
+                raise ValueError("tip")
+            return {"tip": tip, "active": active, "state": state, "muhash": muhash,
+                    "utxos": utxos, "undo": undo}
+        except (ValueError, struct.error, KeyError) as e:
+            self.log(f"ignoring chainstate snapshot: {e}")
+            return None
+
+    def _restore_block(self, blk: Block, snap) -> bool:
+        """Re-index a block the snapshot vouches for, without re-validating it."""
+        parent = self.index.get(blk.header.prev_hash)
+        if parent is None or parent is not self.tip or blk.header.height != parent.height + 1:
+            return False
+        idx = BlockIndex(blk.header, parent)
+        idx.has_data = idx.chain_data = idx.connected = True
+        idx.generated, idx.burned, idx.next_base_fee = snap["state"][idx.hash]
+        self.index[idx.hash] = idx
+        self.children.setdefault(parent.hash, []).append(idx)
+        self.blocks.put(blk, persist=False)
+        self.candidates.add(idx)
+        self.best = self.best_header = idx
+        self.active.append(idx)
+        return True
+
+    def _restore_side_block(self, blk: Block) -> bool:
+        """A block below the snapshot tip that is not on its chain: index it with
+        its data (a deep reorg may still need it) but do not connect anything."""
+        if self.submit_header(blk.header, blk.auxpow) not in ("accepted", "duplicate", "orphan"):
+            return True                 # provably invalid: just leave it out of the index
+        idx = self.index.get(blk.hash)
+        if idx is not None:
+            self.blocks.put(blk, persist=False)
+            self._mark_data(idx)
+        return True
 
     # ------------------------------------------------------------ helpers
     @property
@@ -504,36 +660,108 @@ class Chain:
             self.orphan_bytes -= size
         return list(fam.values())
 
+    def submit_header(self, hdr: BlockHeader, auxpow=None) -> str:
+        """Accept a header (with its merge-mining proof, if any) into the index
+        before its block is downloaded. Returns accepted / duplicate / orphan /
+        invalid: ... Headers-first sync validates a peer's whole chain of work
+        this way before a single block body is fetched."""
+        with self.lock:
+            hsh = hdr.hash
+            if hsh in self.index:
+                return "duplicate"
+            probe = Block(hdr, [], auxpow)
+            if hdr.version & 0xFF != 1:
+                return "invalid: unknown block version"
+            if bits_to_target(hdr.bits) > self.params.pow_limit:
+                return "invalid: target above proof-of-work limit"
+            if not probe.check_pow(self.params):
+                return "invalid: proof-of-work too weak"
+            parent = self.index.get(hdr.prev_hash)
+            if parent is None:
+                return "orphan"
+            if parent.invalid:
+                return "invalid: parent invalid"
+            try:
+                self.check_header_context(hdr, parent)
+            except ValidationError as e:
+                return f"invalid: {e}"
+            idx = BlockIndex(hdr, parent)
+            self.index[hsh] = idx
+            self.children.setdefault(parent.hash, []).append(idx)
+            if idx.chainwork > self.best_header.chainwork:
+                self.best_header = idx
+            return "accepted"
+
+    def missing_blocks(self, limit: int = 128) -> List[BlockIndex]:
+        """Blocks on the best header chain we have no data for, oldest first."""
+        with self.lock:
+            out = []
+            x = self.best_header
+            while x is not None and not x.chain_data and not x.invalid:
+                if not x.has_data:
+                    out.append(x)
+                x = x.parent
+            out.reverse()
+            return out[:limit]
+
+    def _mark_data(self, idx: BlockIndex):
+        """Record that idx's block is stored; propagate connectability downwards."""
+        idx.has_data = True
+        if not idx.parent.chain_data:
+            return
+        stack = [idx]
+        while stack:
+            x = stack.pop()
+            if x.chain_data or x.invalid:
+                continue
+            x.chain_data = True
+            self.candidates.add(x)
+            if x.chainwork > self.best.chainwork:
+                self.best = x
+            stack.extend(ch for ch in self.children.get(x.hash, ()) if ch.has_data)
+
     def submit_block(self, blk: Block, persist: bool = True) -> str:
         with self.lock:
             hsh = blk.hash
-            if hsh in self.index:
+            idx = self.index.get(hsh)
+            if idx is not None and idx.has_data:
                 return "duplicate"
             try:
                 self.check_block(blk)
             except ValidationError as e:
                 return f"invalid: {e}"
-            parent = self.index.get(blk.header.prev_hash)
-            if parent is None:
-                if hsh not in self.orphan_meta:
-                    self._add_orphan(blk)
-                return "orphan"
-            if parent.invalid:
-                return "invalid: parent invalid"
-            try:
-                self.check_header_context(blk.header, parent)
-            except ValidationError as e:
-                return f"invalid: {e}"
-            idx = BlockIndex(blk.header, parent)
-            self.index[hsh] = idx
+            if idx is None:
+                parent = self.index.get(blk.header.prev_hash)
+                if parent is None:
+                    if hsh not in self.orphan_meta:
+                        self._add_orphan(blk)
+                    return "orphan"
+                if parent.invalid:
+                    return "invalid: parent invalid"
+                try:
+                    self.check_header_context(blk.header, parent)
+                except ValidationError as e:
+                    return f"invalid: {e}"
+                idx = BlockIndex(blk.header, parent)
+                self.index[hsh] = idx
+                self.children.setdefault(parent.hash, []).append(idx)
+                if idx.chainwork > self.best_header.chainwork:
+                    self.best_header = idx
+            elif idx.invalid:
+                return f"invalid: {idx.why}"
             self.blocks.put(blk, persist)
-            self.candidates.add(idx)
-            if idx.chainwork > self.best.chainwork:
-                self.best = idx
+            self._mark_data(idx)
             self._activate_best_chain()
-            status = f"invalid: {idx.why}" if idx.invalid else "accepted"
+            if idx.invalid:
+                status = f"invalid: {idx.why}"
+            elif idx.chain_data:
+                status = "accepted"
+            else:
+                status = "stored"          # waiting for an ancestor's data
             for child in self._take_orphans(hsh):
                 self.submit_block(child, persist)
+            if persist and self.datadir and self.since_snapshot >= SNAPSHOT_EVERY:
+                self.snapshot()
             return status
 
     def _connect(self, idx: BlockIndex, blk: Block):
@@ -575,14 +803,29 @@ class Chain:
         idx.next_base_fee = next_base_fee(p, base_fee, blk.size)
         idx.connected = True
         self.active.append(idx)
+        self.since_snapshot += 1
 
     def _disconnect_tip(self) -> Block:
         idx = self.tip
         blk = self.blocks[idx.hash]
+        spent = self.undo.pop(idx.hash)
+        if idx.parent.muhash is None:
+            # Undo the multiset arithmetically: the parent's digest is the child's
+            # with this block's outputs removed and its spent coins put back.
+            mh = MuHash(idx.muhash)
+            for tx in blk.txs:
+                for i, o in enumerate(tx.outputs):
+                    op = OutPoint(tx.txid, i)
+                    coin = self.utxos.get(op)
+                    if coin is not None:
+                        mh.remove(coin_bytes(op, coin))
+            for op, coin in spent.items():
+                mh.insert(coin_bytes(op, coin))
+            idx.parent.muhash = mh.value()
         for tx in blk.txs:
             for i in range(len(tx.outputs)):
                 self.utxos.pop(OutPoint(tx.txid, i), None)
-        self.utxos.update(self.undo.pop(idx.hash))
+        self.utxos.update(spent)
         self.active.pop()
         for fn in self.listeners:
             fn("disconnect", idx)
@@ -591,11 +834,18 @@ class Chain:
     def _mark_invalid(self, bad: BlockIndex, why: str):
         bad.invalid = True
         bad.why = why
-        for idx in list(self.candidates):
-            if idx.height >= bad.height and idx.ancestor(bad.height) is bad:
-                idx.invalid = True
-                self.candidates.discard(idx)
+        stack = list(self.children.get(bad.hash, ()))
+        while stack:
+            x = stack.pop()
+            x.invalid = True
+            x.why = "parent invalid"
+            self.candidates.discard(x)
+            stack.extend(self.children.get(x.hash, ()))
+        self.candidates.discard(bad)
         self.best = max(self.candidates, key=lambda i: i.chainwork)
+        if self.best_header.invalid:
+            self.best_header = max((i for i in self.index.values() if not i.invalid),
+                                   key=lambda i: i.chainwork)
 
     def _activate_best_chain(self):
         disconnected = []
@@ -710,15 +960,38 @@ class Chain:
             return blk
 
     # ------------------------------------------------------------ queries
-    def locator(self) -> List[bytes]:
-        out, step, h = [], 1, self.height
-        while h > 0:
-            out.append(self.active[h].hash)
-            if len(out) >= 10:
-                step *= 2
-            h -= step
-        out.append(self.genesis.hash)
-        return out
+    def locator(self, start: Optional[BlockIndex] = None) -> List[bytes]:
+        """Exponentially sparse sample of a chain's hashes, newest first, so a
+        peer can find our fork point in O(log n) entries."""
+        with self.lock:
+            x = start or self.tip
+            out, step = [], 1
+            while x is not None and x.height > 0:
+                out.append(x.hash)
+                if len(out) >= 10:
+                    step *= 2
+                x = x.ancestor(x.height - step)
+            out.append(self.genesis.hash)
+            return out
+
+    def header_locator(self) -> List[bytes]:
+        return self.locator(self.best_header)
+
+    def headers_after(self, locator: List[bytes], limit: int = MAX_HEADERS) -> List[Block]:
+        """Headers (with merge-mining proofs) on our active chain after the first
+        locator entry we recognise, as body-less blocks."""
+        with self.lock:
+            start = 0
+            for h in locator:
+                idx = self.index.get(h)
+                if idx and self.on_active_chain(idx):
+                    start = idx.height
+                    break
+            out = []
+            for i in self.active[start + 1:start + 1 + limit]:
+                aux = self.blocks[i.hash].auxpow if i.header.version & VERSION_AUXPOW else None
+                out.append(Block(i.header, [], aux))
+            return out
 
     def blocks_after(self, locator: List[bytes], limit: int = 500) -> List[Block]:
         with self.lock:

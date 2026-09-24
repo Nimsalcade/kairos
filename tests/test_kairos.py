@@ -253,8 +253,8 @@ class TestChain(unittest.TestCase):
             c2.close()
             self.assertEqual(c2.tip.hash, c1.tip.hash)
             self.assertEqual(c2.utxos, c1.utxos)
-            # blocks are read back from disk, not held in memory
-            self.assertEqual(c2.blocks.mem, {})
+            # blocks are read back from disk, not held in memory (only genesis is pinned)
+            self.assertEqual(set(c2.blocks.mem), {c2.genesis.hash})
             self.assertEqual(c2.blocks[c2.tip.hash].hash, c1.tip.hash)
 
     def test_sighash_commits_to_spent_amounts(self):

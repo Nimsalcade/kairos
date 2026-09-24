@@ -3,17 +3,24 @@ Kairos peer-to-peer node (protocol 4).
 
 Newline-delimited JSON over TCP. Every message carries the network magic.
 
-    version   {proto, genesis, height, nonce, agent}   first message, both ways
-    inv       {blocks:[hash], txs:[txid]}              announce, never push
-    getdata   {blocks:[hash], txs:[txid]}              request announced items
-    getblocks {locator:[hash]}                         answered with an inv of <=500
-    block     {data:hex}     tx {data:hex}
+    version    {proto, genesis, height, nonce, agent, port}   first message, both ways
+    inv        {blocks:[hash], txs:[txid]}              announce, never push
+    getdata    {blocks:[hash], txs:[txid]}              request announced items
+    getheaders {locator:[hash]}                         answered with headers
+    headers    {data:[hex]}                             <=2000 headers (+ merge-mining proofs)
+    block      {data:hex}     tx {data:hex}
     ping {n} / pong {n}
-    getaddr {}  /  addr {addrs:[[ "ip:port", seen ], ...]}   (protocol 3+ only)
+    getaddr {}  /  addr {addrs:[[ "ip:port", seen ], ...]}
+
+Sync is headers-first: a peer's whole chain of headers is validated (work,
+difficulty schedule, timestamps) before any block body is requested, and
+bodies are then fetched in order along the most-work header chain, from
+several peers at once, with stalled requests re-issued elsewhere.
 
 Hardening:
   * handshake binds the peer to our genesis block and magic; self-connections dropped
   * relay is announce-then-request, so nobody can push megabytes at us unasked
+  * nobody can make us download a chain that does not carry the most work
   * misbehaviour score per peer; 100 points = disconnect + 24h IP ban
   * per-peer token-bucket message rate limit and a hard line-size cap
   * inbound peer cap, handshake timeout, idle timeout with pings
@@ -50,6 +57,10 @@ BAN_SECONDS = 24 * 3600
 RATE_PER_SEC = 100
 RATE_BURST = 1000
 MAX_SEND_QUEUE = 64 * 1024 * 1024    # a peer that won't read this much is dropped
+MAX_HEADERS = 2000
+BLOCKS_IN_FLIGHT_PER_PEER = 16
+BLOCK_STALL = 60                     # seconds before a requested block is asked from someone else
+MAX_UNCONNECTING_HEADERS = 10
 BENIGN_TX_ERRORS = ("conflicts", "mempool full", "below base fee", "missing or spent",
                     "expired", "immature")
 
@@ -87,6 +98,8 @@ class Peer:
         self.sent_addr = False
         self.last_sync = 0.0
         self.sync_pending = False
+        self.unconnecting = 0         # headers batches that did not attach to our index
+        self.inflight = set()         # block hashes we asked this peer for
 
     @property
     def key(self):
@@ -205,6 +218,10 @@ class Node:
         self.use_seeds = use_seeds
         self.manual = set()           # "ip:port" peers we always keep connected
         self.pending = set()          # dials in progress
+        self.inflight = {}            # block hash -> (peer, asked_at)
+        self.queue = []               # blocks still to fetch on the best header chain, oldest first
+        self.queue_for = None         # the best header the queue was computed for
+        self.qlock = threading.Lock()
         path = os.path.join(chain.datadir, "peers.json") if chain.datadir else None
         self.addrman = AddrMan(path, allow_private=chain.params.name == "regtest")
         threading.Thread(target=self._accept_loop, daemon=True).start()
@@ -263,6 +280,14 @@ class Node:
                 self.peers.remove(p)
                 if p.ready and self.running:
                     self.log(f"[{self.name}] lost peer {p.key or p.addr[0]}")
+        if p.inflight:
+            with self.qlock:
+                for h in p.inflight:
+                    if self.inflight.get(h, (None,))[0] is p:
+                        del self.inflight[h]
+                p.inflight.clear()
+            if self.running:
+                self._fetch_blocks()
 
     def misbehave(self, peer, points, why):
         peer.score += points
@@ -284,6 +309,20 @@ class Node:
                     p.close()
                 elif now - p.last_recv > PING_INTERVAL:
                     p.send({"type": "ping", "n": int(now)})
+            stalled, to_close = False, []
+            with self.qlock:
+                for h, (peer, asked) in list(self.inflight.items()):
+                    if now - asked > BLOCK_STALL or not peer.alive:
+                        del self.inflight[h]
+                        peer.inflight.discard(h)
+                        stalled = True
+                        if peer.alive and peer not in to_close:
+                            to_close.append(peer)
+            for peer in to_close:                    # outside qlock: close() re-enters via _drop
+                self.log(f"[{self.name}] peer {peer.key or peer.addr[0]} stalled; dropping")
+                peer.close()
+            if stalled:
+                self._fetch_blocks()
 
     def broadcast_inv(self, blocks=(), txs=(), exclude=None):
         with self.plock:
@@ -358,8 +397,8 @@ class Node:
                 self.addrman.add(peer.addr[0], peer.listen_port)
             if peer.outbound:
                 peer.send({"type": "getaddr"})
-            if peer.height > self.chain.height:
-                self._request_sync(peer)
+            if peer.height > self.chain.best_header.height:
+                self._request_headers(peer)
             # Blocks found while the handshake was in flight were not announced to
             # this peer (it was not ready yet). Announce our tip now; if the peer is
             # behind it will fetch it, find it orphaned, and sync the gap.
@@ -386,31 +425,63 @@ class Node:
                 tx = self.chain.mempool.get(bytes.fromhex(h))
                 if tx is not None:
                     peer.send({"type": "tx", "data": tx.serialize().hex()})
-        elif t == "getblocks":
+        elif t == "getheaders":
             loc = [bytes.fromhex(h) for h in self._hashes(msg, "locator")[:64]]
-            blocks = self.chain.blocks_after(loc, MAX_INV)
-            if blocks:
-                peer.send({"type": "inv", "blocks": [b.hash.hex() for b in blocks], "txs": []})
+            hdrs = self.chain.headers_after(loc, MAX_HEADERS)
+            peer.send({"type": "headers", "data": [b.serialize().hex() for b in hdrs]})
+        elif t == "headers":
+            items = msg.get("data", [])
+            if not isinstance(items, list) or len(items) > MAX_HEADERS:
+                raise ValueError("bad headers list")
+            last = None
+            for hx in items:
+                blk = Block.deserialize(bytes.fromhex(hx))
+                if blk.txs:
+                    raise ValueError("headers message carries transactions")
+                status = self.chain.submit_header(blk.header, blk.auxpow)
+                if status.startswith("invalid"):
+                    reason = status[9:]
+                    self.misbehave(peer, 0 if "future" in reason else 100, f"invalid header: {reason}")
+                    return
+                if status == "orphan":
+                    # does not attach to anything we know: ask again from our locator
+                    peer.unconnecting += 1
+                    if peer.unconnecting > MAX_UNCONNECTING_HEADERS:
+                        self.misbehave(peer, 100, "headers never connect")
+                    else:
+                        self._request_headers(peer)
+                    return
+                last = blk.header
+            peer.unconnecting = 0
+            if last is not None:
+                peer.height = max(peer.height, last.height)
+                peer.known.add(last.hash.hex())
+            if len(items) == MAX_HEADERS:
+                self._request_headers(peer)          # there is more where that came from
+            self._fetch_blocks()
         elif t == "block":
             blk = Block.deserialize(bytes.fromhex(msg["data"]))
             h = blk.hash.hex()
             peer.known.add(h)
+            with self.qlock:
+                if self.inflight.get(blk.hash, (None,))[0] is peer:
+                    del self.inflight[blk.hash]
+                peer.inflight.discard(blk.hash)
             before = self.chain.tip
             status = self.chain.submit_block(blk)
-            if status == "accepted":
+            if status in ("accepted", "stored"):
                 # Accepting one block can also connect waiting orphans behind it,
                 # so announce the resulting tip too, not just the block we received.
                 # Don't re-announce every block of a download burst (that looks like a flood
                 # to our other peers). Announce the tip, at most twice a second; the final
                 # tip of a burst is always announced by the announcer thread.
-                self._tip_changed()
                 if self.chain.tip is not before:
+                    self._tip_changed()
                     self.log(f"[{self.name}] new tip {self.chain.height} {self.chain.tip.hash.hex()[:16]}")
                 peer.height = max(peer.height, blk.header.height)
-                if peer.height > self.chain.height and self.chain.tip.hash.hex() == h:
-                    self._request_sync(peer)
+                self._fetch_blocks()
             elif status == "orphan":
-                self._request_sync(peer)
+                self._request_headers(peer)           # learn the chain it belongs to first
             elif status.startswith("invalid"):
                 reason = status[9:]
                 # a future timestamp may become valid later; everything else is provably bad
@@ -469,7 +540,7 @@ class Node:
             with self.plock:
                 waiting = [p for p in self.peers if p.sync_pending and p.ready]
             for p in waiting:
-                self._request_sync(p)
+                self._request_headers(p)
             if self._announce_pending and time.time() - self._last_announce >= 0.5:
                 self._last_announce = time.time()
                 self._announce_pending = False
@@ -535,14 +606,45 @@ class Node:
                 self.addrman.save()
                 last_save = time.time()
 
-    def _request_sync(self, peer, now=None):
+    def _request_headers(self, peer, now=None):
         now = now or time.time()
         if now - peer.last_sync < 0.5:
             peer.sync_pending = True           # sent shortly by the announcer thread
             return
         peer.last_sync = now
         peer.sync_pending = False
-        peer.send({"type": "getblocks", "locator": [h.hex() for h in self.chain.locator()]})
+        peer.send({"type": "getheaders", "locator": [h.hex() for h in self.chain.header_locator()]})
+
+    def _fetch_blocks(self):
+        """Ask for the block bodies we lack along the most-work header chain, in
+        order, spread over the peers that have them, a bounded number in flight."""
+        chain = self.chain
+        with self.qlock:
+            best = chain.best_header
+            if self.queue_for is not best:
+                self.queue = chain.missing_blocks(limit=1 << 30)
+                self.queue_for = best
+            while self.queue and (self.queue[0].has_data or self.queue[0].invalid):
+                self.queue.pop(0)
+            if not self.queue:
+                return
+            with self.plock:
+                peers = [p for p in self.peers if p.ready]
+            random.shuffle(peers)
+            want = {}
+            for idx in self.queue[:len(peers) * BLOCKS_IN_FLIGHT_PER_PEER + 64]:
+                if idx.hash in self.inflight or idx.has_data:
+                    continue
+                for p in peers:
+                    if len(p.inflight) < BLOCKS_IN_FLIGHT_PER_PEER and p.height >= idx.height:
+                        want.setdefault(p, []).append(idx.hash)
+                        p.inflight.add(idx.hash)
+                        self.inflight[idx.hash] = (p, time.time())
+                        break
+        for p, hashes in want.items():
+            p.expected = min(p.expected + len(hashes), 10 * MAX_INV)
+            p.known.update(h.hex() for h in hashes)
+            p.send({"type": "getdata", "blocks": [h.hex() for h in hashes], "txs": []})
 
     # ------------------------------------------------------------ local actions
     def submit_tx(self, tx: Transaction):

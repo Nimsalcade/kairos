@@ -591,3 +591,204 @@ class TestWalletHygiene(unittest.TestCase):
                 Wallet._kdf = staticmethod(orig)
             self.assertEqual(calls, [])
             self.assertEqual(len(Wallet.load(REGTEST, os.path.join(d, "w.json"), "correct horse battery").keys), 6)
+
+
+class TestHeadersFirst(unittest.TestCase):
+    """Sync validates a chain of headers before fetching any body, fetches bodies
+    in order from whoever has them, and never downloads a chain with less work."""
+
+    def raw_peer(self, node, height=0):
+        s = socket.create_connection(("127.0.0.1", node.port), timeout=5)
+        s.sendall((json.dumps({"magic": REGTEST.magic.hex(), "type": "version", "proto": 4,
+                               "genesis": node.chain.genesis.hash.hex(), "height": height,
+                               "nonce": random.randrange(1 << 40)}) + "\n").encode())
+        return s
+
+    @staticmethod
+    def messages(s, seconds):
+        s.settimeout(seconds)
+        buf, out = b"", []
+        try:
+            while True:
+                d = s.recv(1 << 20)
+                if not d:
+                    break
+                buf += d
+        except socket.timeout:
+            pass
+        for line in buf.splitlines():
+            out.append(json.loads(line))
+        return out
+
+    def test_sync_in_several_header_batches(self):
+        import kairos.node as N
+        saved = N.MAX_HEADERS
+        N.MAX_HEADERS = 5                       # 23 blocks -> 5 batches
+        try:
+            src = Node(Chain(REGTEST), wallet=Wallet(REGTEST, seed=b"s" * 32))
+            dst = Node(Chain(REGTEST), wallet=Wallet(REGTEST, seed=b"d" * 32))
+            try:
+                for _ in range(23):
+                    src.mine_one()
+                dst.connect("127.0.0.1", src.port)
+                wait(lambda: dst.chain.height == 23, 20)
+                self.assertEqual(dst.chain.tip.hash, src.chain.tip.hash)
+                self.assertEqual(dst.chain.best_header, dst.chain.tip)
+                self.assertEqual(dst.inflight, {})
+            finally:
+                src.stop()
+                dst.stop()
+        finally:
+            N.MAX_HEADERS = saved
+
+    def test_less_work_chain_is_never_downloaded(self):
+        node = Node(Chain(REGTEST), wallet=Wallet(REGTEST, seed=b"a" * 32))
+        try:
+            for _ in range(5):
+                node.mine_one()
+            fork, fclock = new_chain()
+            fclock.t = int(time.time())
+            w = Wallet(REGTEST, seed=b"f" * 32)
+            blocks = [mine_block(fork, fclock, w.mining_address) for _ in range(8)]
+            hdr = lambda b: Block(b.header, [], None).serialize().hex()
+            s = self.raw_peer(node, height=8)
+            self.messages(s, 0.5)                                      # drain version/getheaders
+            # 3 headers of a fork: less work than our 5 blocks -> indexed, never fetched
+            s.sendall((json.dumps({"magic": REGTEST.magic.hex(), "type": "headers",
+                                   "data": [hdr(b) for b in blocks[:3]]}) + "\n").encode())
+            got = self.messages(s, 1.0)
+            self.assertFalse([m for m in got if m["type"] == "getdata"], got)
+            self.assertEqual(node.chain.height, 5)
+            self.assertIn(blocks[2].hash, node.chain.index)
+            # 5 more headers make it the most-work chain -> bodies requested, in order
+            s.sendall((json.dumps({"magic": REGTEST.magic.hex(), "type": "headers",
+                                   "data": [hdr(b) for b in blocks[3:]]}) + "\n").encode())
+            got = self.messages(s, 1.0)
+            asked = [h for m in got if m["type"] == "getdata" for h in m["blocks"]]
+            self.assertEqual(asked, [b.hash.hex() for b in blocks])
+            for b in blocks:
+                s.sendall((json.dumps({"magic": REGTEST.magic.hex(), "type": "block",
+                                       "data": b.serialize().hex()}) + "\n").encode())
+            wait(lambda: node.chain.height == 8, 10)
+            self.assertEqual(node.chain.tip.hash, blocks[-1].hash)
+            self.assertFalse(node.is_banned("127.0.0.1"))
+            s.close()
+        finally:
+            node.stop()
+
+    def test_invalid_header_chain_bans_without_download(self):
+        node = Node(Chain(REGTEST), wallet=Wallet(REGTEST, seed=b"a" * 32))
+        try:
+            fork, fclock = new_chain()
+            fclock.t = int(time.time())
+            b = mine_block(fork, fclock, Wallet(REGTEST, seed=b"f" * 32).mining_address)
+            b.header.bits = 0x207FFFFF                     # not the schedule; still passes its own PoW
+            mine(b.header)
+            s = self.raw_peer(node, height=1)
+            s.sendall((json.dumps({"magic": REGTEST.magic.hex(), "type": "headers",
+                                   "data": [Block(b.header, [], None).serialize().hex()]}) + "\n").encode())
+            wait(lambda: node.is_banned("127.0.0.1"), 5)
+            self.assertNotIn(b.hash, node.chain.index)
+            s.close()
+        finally:
+            node.stop()
+
+    def test_stalled_download_moves_to_another_peer(self):
+        import kairos.node as N
+        saved = N.BLOCK_STALL
+        N.BLOCK_STALL = 1
+        try:
+            good = Node(Chain(REGTEST), wallet=Wallet(REGTEST, seed=b"g" * 32))
+            node = Node(Chain(REGTEST), wallet=Wallet(REGTEST, seed=b"n" * 32))
+            try:
+                for _ in range(6):
+                    good.mine_one()
+                blocks = good.chain.blocks_after([good.chain.genesis.hash])
+                # a silent peer that advertises the chain's headers but never serves bodies
+                s = self.raw_peer(node, height=6)
+                s.sendall((json.dumps({"magic": REGTEST.magic.hex(), "type": "headers",
+                                       "data": [Block(b.header, [], None).serialize().hex()
+                                                for b in blocks]}) + "\n").encode())
+                wait(lambda: node.inflight, 5)                 # bodies requested from the silent peer
+                node.connect("127.0.0.1", good.port)
+                wait(lambda: node.chain.height == 6, 25)       # ...then re-requested from the good one
+                self.assertEqual(node.chain.tip.hash, good.chain.tip.hash)
+                s.close()
+            finally:
+                good.stop()
+                node.stop()
+        finally:
+            N.BLOCK_STALL = saved
+
+
+class TestFastRestart(unittest.TestCase):
+    def test_snapshot_skips_revalidation_and_survives_corruption(self):
+        import kairos.chain as C
+        with tempfile.TemporaryDirectory() as d:
+            clock = Clock(REGTEST.genesis_time + 1)
+            c1 = Chain(REGTEST, datadir=d, now=clock)
+            w = Wallet(REGTEST, seed=b"s" * 32)
+            addr = w.mining_address
+            for _ in range(8):
+                mine_block(c1, clock, addr)
+            tx = w.create_tx(c1, Wallet(REGTEST, seed=b"t" * 32).mining_address, COIN)
+            c1.accept_tx(tx)
+            mine_block(c1, clock, addr)
+            c1.close()                                          # writes chainstate.dat
+            self.assertTrue(os.path.exists(os.path.join(d, "chainstate.dat")))
+
+            connects = []
+            orig = C.Chain._connect
+            C.Chain._connect = lambda self, idx, blk: connects.append(idx.height) or orig(self, idx, blk)
+            try:
+                c2 = Chain(REGTEST, datadir=d, now=clock)
+            finally:
+                C.Chain._connect = orig
+            self.assertEqual(connects, [])                      # nothing re-validated
+            self.assertEqual(c2.tip.hash, c1.tip.hash)
+            self.assertEqual(c2.utxos, c1.utxos)
+            self.assertEqual(c2.tip.muhash, c1.tip.muhash)
+            self.assertEqual(c2.tip.generated, c1.tip.generated)
+            self.assertEqual(c2.tip.next_base_fee, c1.tip.next_base_fee)
+            mine_block(c2, clock, addr)                          # and it keeps working
+            self.assertEqual(c2.height, 10)
+            c2.close()
+
+            # A damaged snapshot is ignored and the chain is rebuilt from blocks.
+            path = os.path.join(d, "chainstate.dat")
+            with open(path, "r+b") as f:
+                f.seek(100)
+                f.write(b"\xff")
+            c3 = Chain(REGTEST, datadir=d, now=clock)
+            self.assertEqual(c3.height, 10)
+            self.assertEqual(c3.utxos, c2.utxos)
+            c3.close()
+
+    def test_reorg_across_snapshot_boundary(self):
+        """After a restart the node must still be able to undo snapshot-covered
+        blocks (stored undo data) and recompute the UTXO commitment on the way."""
+        with tempfile.TemporaryDirectory() as d:
+            clock = Clock(REGTEST.genesis_time + 1)
+            c1 = Chain(REGTEST, datadir=d, now=clock)
+            w = Wallet(REGTEST, seed=b"s" * 32)
+            for _ in range(6):
+                mine_block(c1, clock, w.mining_address)
+            common = c1.blocks_after([c1.genesis.hash])[:3]
+            c1.close()
+            c2 = Chain(REGTEST, datadir=d, now=clock)
+            self.assertEqual(c2.height, 6)
+            rival, rclock = new_chain()
+            for b in common:
+                rival.submit_block(b)
+            rclock.t = clock.t
+            for _ in range(5):                                   # 3 + 5 = 8 > 6
+                b = mine_block(rival, rclock, Wallet(REGTEST, seed=b"r" * 32).mining_address, step=60)
+                c2.submit_block(b)
+            self.assertEqual(c2.tip.hash, rival.tip.hash)
+            self.assertEqual(c2.utxos, rival.utxos)
+            self.assertEqual(c2.tip.muhash, rival.tip.muhash)
+            c2.close()
+            c3 = Chain(REGTEST, datadir=d, now=clock)
+            self.assertEqual(c3.tip.hash, rival.tip.hash)
+            self.assertEqual(c3.utxos, rival.utxos)
+            c3.close()
