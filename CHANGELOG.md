@@ -8,6 +8,18 @@ No consensus change.
   once per peer. Peer threads compared the tip against the one they saw
   before their own submit, so a thread also reported tips another thread had
   produced. The node now reports each tip once. Logging only.
+- HD wallets: new wallets derive keys by BIP32 from BIP39 words at
+  `m/44'/coin'/0'/0/i` (coin 19282' on mainnet, pending SLIP-44
+  registration; 1' on test networks). A hardware wallet holding the same
+  words derives the same Schnorr keys: each Kairos key is the x-coordinate of
+  the standard BIP32 key at that path. Every address's post-quantum key is
+  derived from its private key, so an xpub alone cannot produce Kairos
+  addresses; watch-only software needs the addresses from the signer.
+  `wallet backup` shows the 24 words; `wallet restore "words..."` and
+  `wallet xpub` are new. Existing wallets keep their derivation unchanged.
+  Verified against all official BIP32 (17 derivations, 16 invalid keys) and
+  BIP39 (24) test vectors; RIPEMD-160 has a pure-Python fallback for Python
+  builds without it. The wallet file now encrypts seeds of any length.
 - Eclipse resistance: the address manager now follows Bitcoin Core's design.
   NEW and TRIED tables are split into buckets placed by a keyed hash with a
   secret per-node key. An address heard from a peer is placed by that peer's
