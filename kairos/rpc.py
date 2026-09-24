@@ -151,13 +151,25 @@ class RPCServer:
     def rpc_getblockchaininfo(self):
         t = self.chain.tip
         s = self.chain.supply()
-        return {"chain": self.chain.params.name, "blocks": t.height, "headers": t.height,
+        return {"chain": self.chain.params.name, "blocks": t.height,
+                "headers": self.chain.best_header.height, "assumed_height": self.chain.assumed_height,
                 "bestblockhash": t.hash.hex(), "difficulty": self._difficulty(t.header.bits),
                 "time": t.header.time, "mediantime": self.chain.median_time_past(t),
                 "chainwork": f"{t.chainwork:064x}", "utxo_root": t.header.utxo_root.hex(),
                 "generated": s["generated"] / COIN, "burned": s["burned"] / COIN,
                 "circulating": s["circulating"] / COIN, "next_base_fee": s["next_base_fee"],
+                "pq_only": self.chain.pq_active(t), "softforks": self.chain.deployment_info(t),
                 "crypto_backend": BACKEND}
+
+    def rpc_getdeploymentinfo(self):
+        return {"hash": self.chain.tip.hash.hex(), "height": self.chain.height,
+                "deployments": self.chain.deployment_info(self.chain.tip)}
+
+    def rpc_setsignal(self, name, enable=True):
+        if self.chain.deployment(str(name)) is None:
+            raise RPCError(-8, "unknown deployment")
+        (self.chain.signal.add if enable else self.chain.signal.discard)(str(name))
+        return sorted(self.chain.signal)
 
     def _index(self, h):
         idx = self.chain.index.get(_hash_arg(h))
@@ -175,6 +187,7 @@ class RPCServer:
                 "previousblockhash": hd.prev_hash.hex(), "nextblockhash": nxt,
                 "tx_root": hd.tx_root.hex(), "utxo_root": hd.utxo_root.hex(), "time": hd.time,
                 "bits": f"{hd.bits:08x}", "nonce": hd.nonce, "difficulty": self._difficulty(hd.bits),
+                "next_base_fee": hd.fee,
                 "chainwork": f"{idx.chainwork:064x}"}
 
     def rpc_getblock(self, h, verbosity=1):
@@ -185,6 +198,17 @@ class RPCServer:
         out = self.rpc_getblockheader(h)
         out.update(size=blk.size, auxpow=blk.auxpow is not None, tx=[t.txid.hex() for t in blk.txs])
         return out
+
+    def rpc_dumputxoset(self, path):
+        return self.chain.export_utxo_snapshot(str(path))
+
+    def rpc_loadutxoset(self, path):
+        target = self.chain.import_utxo_snapshot(str(path))
+        with self.node.qlock:
+            self.node.queue_for = None                # recompute what is left to download
+        self.node._fetch_blocks()
+        return {"hash": target.hash.hex(), "height": target.height,
+                "coins": len(self.chain.utxos), "next_base_fee": target.next_base_fee}
 
     def rpc_gettxoutsetinfo(self):
         t = self.chain.tip
@@ -250,7 +274,8 @@ class RPCServer:
         return {"blocks": t.height, "difficulty": self._difficulty(self.chain.expected_bits(t)),
                 "next_subsidy": subsidy(self.chain.params, t.generated) / COIN,
                 "pooledtx": len(self.chain.mempool), "chain": self.chain.params.name,
-                "merge_mining_chain_id": self.chain.params.mm_chain_id}
+                "merge_mining_chain_id": self.chain.params.mm_chain_id,
+                "signalling": sorted(self.chain.signal)}
 
     # ------------------------------------------------------------ wallet
     def _w(self):
@@ -270,6 +295,11 @@ class RPCServer:
 
     def rpc_getnewaddress(self, label=""):
         return self._w().new_address()
+
+    def rpc_rescanwallet(self):
+        w = self._w()
+        w.rescan(self.chain)
+        return {"keys": len(w.keys), "used": len(w.used)}
 
     def rpc_getbalance(self):
         return self._w().balance(self.chain)["spendable"] / COIN

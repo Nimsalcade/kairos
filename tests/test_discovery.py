@@ -130,57 +130,28 @@ class TestDiscovery(unittest.TestCase):
                 self.assertIn(f"127.0.0.1:{b.port}", json.load(f))
 
 
-class TestCompatibilityWith022(unittest.TestCase):
-    """0.3 must interoperate with the 0.2.2 seed nodes still running on the testnet."""
+class TestProtocolFloor(unittest.TestCase):
+    """0.4 is a new chain (testnet 2). Older nodes are disconnected politely, never banned."""
 
-    def test_no_address_gossip_with_old_peers_and_no_ban(self):
+    def test_old_protocol_disconnected_not_banned(self):
         n = mk()
-        seen, stop = [], threading.Event()
-        srv = socket.socket()
-        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        srv.bind(("127.0.0.1", 0))
-        srv.listen(1)
-        port = srv.getsockname()[1]
-
-        def old_peer():                                    # behaves like a 0.2.2 node
-            conn, _ = srv.accept()
-            conn.sendall((json.dumps({"magic": REGTEST.magic.hex(), "type": "version", "proto": 2,
-                                      "genesis": n.chain.genesis.hash.hex(), "height": 0,
-                                      "nonce": 42, "agent": "/kairos:0.2.2/"}) + "\n").encode())
-            conn.settimeout(0.5)
-            buf = b""
-            while not stop.is_set():
-                try:
-                    d = conn.recv(65536)
-                    if not d:
-                        break
-                    buf += d
-                except socket.timeout:
-                    pass
-            for line in buf.splitlines():
-                seen.append(json.loads(line)["type"])
-            conn.close()
-        t = threading.Thread(target=old_peer, daemon=True)
-        t.start()
         try:
-            n.add_manual(f"127.0.0.1:{port}")
-            wait(lambda: peer_keys(n), 10)
-            time.sleep(1.5)
+            s = socket.create_connection(("127.0.0.1", n.port), timeout=5)
+            s.sendall((json.dumps({"magic": REGTEST.magic.hex(), "type": "version", "proto": 3,
+                                   "genesis": n.chain.genesis.hash.hex(), "height": 0,
+                                   "nonce": 42, "agent": "/kairos:0.3.0/"}) + "\n").encode())
+            wait(lambda: not n.peers, 10)
+            self.assertFalse(n.is_banned("127.0.0.1"))
+            s.close()
         finally:
-            stop.set()
-            t.join(5)
             n.stop()
-            srv.close()
-        self.assertIn("version", seen)
-        self.assertNotIn("getaddr", seen)                  # 0.2.2 would penalise it
-        self.assertNotIn("addr", seen)
 
     def test_unknown_message_types_are_ignored_not_punished(self):
         n = mk()
         try:
             s = socket.create_connection(("127.0.0.1", n.port), timeout=5)
             m = REGTEST.magic.hex()
-            s.sendall((json.dumps({"magic": m, "type": "version", "proto": 3,
+            s.sendall((json.dumps({"magic": m, "type": "version", "proto": 4,
                                    "genesis": n.chain.genesis.hash.hex(), "height": 0, "nonce": 7}) + "\n").encode())
             for _ in range(20):
                 s.sendall((json.dumps({"magic": m, "type": "some_future_message"}) + "\n").encode())
@@ -194,7 +165,7 @@ class TestCompatibilityWith022(unittest.TestCase):
     def test_testnet_ignores_private_addresses_from_peers(self):
         n = mk(TESTNET, use_seeds=False)
         try:
-            p = type("P", (), {"proto": 3, "addr_msgs": 0, "ready": True})()
+            p = type("P", (), {"proto": 4, "addr_msgs": 0, "ready": True})()
             n._handle(p, {"type": "addr", "addrs": [["10.0.0.1:19333", 0], ["127.0.0.1:19333", 0],
                                                      ["203.0.113.9:19333", 0], ["8.8.4.4:19333", 0]]})
             self.assertEqual(set(n.addrman.entries), {"8.8.4.4:19333"})   # 203.0.113/24 is doc-only

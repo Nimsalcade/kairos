@@ -1,9 +1,13 @@
 """
 Kairos blocks.
 
-Header (124 bytes):
+Header (132 bytes):
     version u32 | height u32 | prev_hash 32 | tx_root 32 | utxo_root 32 |
-    time u64 | bits u32 | nonce u64
+    time u64 | bits u32 | fee u64 | nonce u64
+
+ * version: bits 0..7 must be 1; bit 8 = merge-mined (auxpow follows the
+   header); bits 16..28 = soft-fork signalling (params.Deployment). Other bits
+   are ignored by consensus so that future signals never split old nodes.
 
  * height is in the header: light clients know where they are without trust.
  * tx_root commits to wtxids, so witnesses are committed directly. Clean slate
@@ -11,6 +15,9 @@ Header (124 bytes):
  * utxo_root is the MuHash3072 digest of the full UTXO set AFTER this block.
    Any node can bootstrap from a recent snapshot and verify it against
    proof-of-work instead of replaying all history.
+ * fee is the base fee (motes per byte) that applies to the NEXT block. With
+   utxo_root it makes the header commit to the complete state a node needs
+   to continue from a snapshot; light clients read the fee level from headers.
  * time is 64-bit: no year-2106 problem.
 """
 import io
@@ -28,7 +35,7 @@ from .tx import Transaction, TxOut, make_coinbase, read_varint, write_varint, NU
 VERSION_BASE = 1
 VERSION_AUXPOW = 0x100          # header flag: work is proven by a merge-mined parent
 
-HEADER_FMT = "<II32s32s32sQIQ"
+HEADER_FMT = "<II32s32s32sQIQQ"
 HEADER_SIZE = struct.calcsize(HEADER_FMT)
 GENESIS_MESSAGE = (b"22/Sep/2026 Kairos genesis: money should outlive "
                    b"the machines that mint it")
@@ -43,11 +50,12 @@ class BlockHeader:
     utxo_root: bytes
     time: int
     bits: int
+    fee: int
     nonce: int
 
     def serialize(self) -> bytes:
         return struct.pack(HEADER_FMT, self.version, self.height, self.prev_hash,
-                           self.tx_root, self.utxo_root, self.time, self.bits, self.nonce)
+                           self.tx_root, self.utxo_root, self.time, self.bits, self.fee, self.nonce)
 
     @classmethod
     def deserialize(cls, b: bytes) -> "BlockHeader":
@@ -134,7 +142,7 @@ def genesis_block(params: ChainParams) -> Block:
     cb = make_coinbase(0, [TxOut(0, NULL_HASH)], GENESIS_MESSAGE)
     from .crypto import MuHash
     hdr = BlockHeader(VERSION_BASE, 0, NULL_HASH, b"", MuHash().digest(), params.genesis_time,
-                      params.genesis_bits, params.genesis_nonce)
+                      params.genesis_bits, params.min_base_fee, params.genesis_nonce)
     blk = Block(hdr, [cb])
     hdr.tx_root = blk.compute_tx_root()
     return blk

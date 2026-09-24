@@ -7,8 +7,11 @@ Kairos transactions.
        address = H("Kairos/address", schnorr_pubkey || pq_root)
    The owner can spend with a 64-byte Schnorr signature today, or with a
    hash-based Lamport signature if elliptic-curve cryptography ever falls.
- * The signature hash commits to the chain id (cross-chain replay protection)
-   and to the whole transaction (SIGHASH_ALL only).
+ * The signature hash commits to the chain id (cross-chain replay protection),
+   to the whole transaction (SIGHASH_ALL only) and to the value and address of
+   every coin being spent. A signer therefore knows exactly what it pays and
+   what fee it leaves, without needing the previous transactions (the problem
+   Bitcoin fixed with BIP143 for hardware wallets).
  * Optional expiry height: stuck transactions die instead of haunting mempools.
 """
 import io
@@ -155,8 +158,11 @@ class Transaction:
             self._cache["wtxid"] = tagged_hash("Kairos/wtxid", self.serialize())
         return self._cache["wtxid"]
 
-    def sighash(self, chain_id: bytes) -> bytes:
-        return tagged_hash("Kairos/sighash", chain_id + self.body())
+    def sighash(self, chain_id: bytes, spent) -> bytes:
+        """`spent` is the (value, address) of each input's coin, in input order."""
+        commit = b"".join(struct.pack("<Q", v) + a for v, a in spent)
+        return tagged_hash("Kairos/sighash", chain_id + self.body()
+                           + tagged_hash("Kairos/spent", commit))
 
     @property
     def size(self) -> int:
@@ -189,15 +195,14 @@ def lamport_witness(pubkey: bytes, lamport_pub: bytes, sig: bytes) -> bytes:
     return bytes([WIT_LAMPORT]) + pubkey + lamport_pub + sig
 
 
-def verify_witness(witness: bytes, address: bytes, sighash: bytes,
-                   height: int, pq_emergency_height) -> bool:
+def verify_witness(witness: bytes, address: bytes, sighash: bytes, pq_only: bool = False) -> bool:
     if not witness:
         return False
     kind = witness[0]
     if kind == WIT_SCHNORR:
         if len(witness) != 1 + 32 + 32 + 64:
             return False
-        if pq_emergency_height is not None and height >= pq_emergency_height:
+        if pq_only:
             return False   # elliptic-curve spends disabled: quantum emergency is active
         pk, pqr, sig = witness[1:33], witness[33:65], witness[65:]
         return make_address(pk, pqr) == address and schnorr_verify(sighash, pk, sig)

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kairos-node"
-version = "0.3.0"
+version = "0.4.0"
 description = "Kairos: a peer-to-peer electronic cash system built to last (experimental testnet)"
 readme = "README.md"
 license = { text = "MIT" }

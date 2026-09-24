@@ -6,6 +6,7 @@ kairos - command line
   python -m kairos [net] node [--connect host:port] [--mine] [--rpcport N]
   python -m kairos [net] rpc <method> [params...]
   python -m kairos [net] wallet show|backup|encrypt|restore <code>
+  python -m kairos [net] utxo export|import <file>     (node must be running)
 """
 import argparse
 import getpass
@@ -84,7 +85,7 @@ def safety_banner(p):
     if p.name == "regtest":
         return
     print("=" * 72)
-    print(" Kairos 0.3.x has NOT been independently audited. See LAUNCH.md.")
+    print(" Kairos 0.4.x has NOT been independently audited. See LAUNCH.md.")
     if not crypto.HARDENED:
         print(" libsecp256k1 not found: signing is disabled on this network.")
         print(" Install it with:  pip install coincurve")
@@ -173,6 +174,9 @@ def run_command(line, chain, wallet, node):
             print(f"height {s['height']} tip {chain.tip.hash.hex()}\n"
                   f"circulating {fmt(s['circulating'])} burned {fmt(s['burned'])} "
                   f"base fee {s['next_base_fee']} motes/B mempool {len(chain.mempool)} peers {len(node.peers)}")
+            for name, d in chain.deployment_info().items():
+                extra = f" ({d['signalled']}/{d['elapsed']} signalling)" if d["state"] == "started" else ""
+                print(f"soft fork {name}: {d['state']}{extra}")
         elif cmd == "balance":
             b = wallet.balance(chain)
             print(f"spendable {fmt(b['spendable'])}  immature {fmt(b['immature'])}  "
@@ -229,7 +233,14 @@ def cmd_node(args):
     os.makedirs(datadir, mode=0o700, exist_ok=True)
     wallet = open_wallet(args, p)
     print(f"loading chain from {datadir} ...")
-    chain = Chain(p, datadir=datadir)
+    chain = Chain(p, datadir=datadir, reindex=args.reindex)
+    chain.log = say
+    chain.signal.update(args.signal or [])
+    for name in chain.signal:
+        if chain.deployment(name) is None:
+            raise SystemExit(f"unknown deployment {name!r}; known: "
+                             f"{', '.join(d.name for d in p.deployments) or 'none'}")
+    wallet.attach(chain)
     p2p, rpcp = DEFAULT_PORTS[p.name]
     node = Node(chain, host=args.bind, port=args.port or p2p, wallet=wallet, log=say,
                 name="node", max_inbound=args.maxinbound, max_outbound=args.maxoutbound)
@@ -253,7 +264,7 @@ def cmd_node(args):
             print("no --connect peers and no seed nodes for this network: running alone")
     if args.mine:
         node.start_mining()
-        print("mining started")
+        print("mining started" + (f", signalling {sorted(chain.signal)}" if chain.signal else ""))
     if args.daemon or not sys.stdin.isatty():
         print("running (Ctrl-C to stop)")
         try:
@@ -297,6 +308,26 @@ def cmd_rpc(args):
         raise SystemExit(f"error {r['error'].get('code')}: {r['error'].get('message')}")
     res = r["result"]
     print(json.dumps(res, indent=2) if isinstance(res, (dict, list)) else res)
+
+
+def cmd_utxo(args):
+    from .rpc import call
+    p = net(args)
+    path = os.path.abspath(args.file)
+    method = "dumputxoset" if args.action == "export" else "loadutxoset"
+    try:
+        r = call(datadir_for(args, p), args.rpcport or DEFAULT_PORTS[p.name][1], method, [path])
+    except OSError as e:
+        raise SystemExit(f"cannot reach node (it must be running): {e}")
+    if r.get("error"):
+        raise SystemExit(f"error: {r['error'].get('message')}")
+    res = r["result"]
+    if args.action == "export":
+        print(f"wrote {path}: {res['coins']:,} coins at height {res['height']} "
+              f"({res['bytes']:,} bytes), utxo_root {res['utxo_root']}")
+    else:
+        print(f"adopted snapshot at height {res['height']} ({res['coins']:,} coins); "
+              f"the node now downloads only newer blocks")
 
 
 def cmd_wallet(args):
@@ -349,16 +380,23 @@ def main(argv=None):
     n.add_argument("--maxinbound", type=int, default=32)
     n.add_argument("--maxoutbound", type=int, default=8)
     n.add_argument("--daemon", action="store_true", help="no console")
+    n.add_argument("--signal", action="append", metavar="NAME",
+                   help="signal readiness for a soft fork in mined blocks (e.g. pq)")
+    n.add_argument("--reindex", action="store_true", help="ignore chainstate.dat and replay all blocks")
     r = sub.add_parser("rpc", parents=[common])
     r.add_argument("method")
     r.add_argument("params", nargs="*")
     wl = sub.add_parser("wallet", parents=[common])
     wl.add_argument("action", choices=["show", "backup", "encrypt", "restore"])
     wl.add_argument("code", nargs="?")
+    ux = sub.add_parser("utxo", parents=[common])
+    ux.add_argument("action", choices=["export", "import"])
+    ux.add_argument("file")
     args = ap.parse_args(argv)
     if args.testnet and args.regtest:
         ap.error("choose one of --testnet / --regtest")
-    fn = {"info": cmd_info, "demo": cmd_demo, "node": cmd_node, "rpc": cmd_rpc, "wallet": cmd_wallet}
+    fn = {"info": cmd_info, "demo": cmd_demo, "node": cmd_node, "rpc": cmd_rpc, "wallet": cmd_wallet,
+          "utxo": cmd_utxo}
     return fn[args.cmd](args)
 
 
