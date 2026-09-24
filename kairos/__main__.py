@@ -85,7 +85,7 @@ def safety_banner(p):
     if p.name == "regtest":
         return
     print("=" * 72)
-    print(" Kairos 0.3.x has NOT been independently audited. See LAUNCH.md.")
+    print(" Kairos 0.4.x has NOT been independently audited. See LAUNCH.md.")
     if not crypto.HARDENED:
         print(" libsecp256k1 not found: signing is disabled on this network.")
         print(" Install it with:  pip install coincurve")

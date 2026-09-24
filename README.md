@@ -12,6 +12,11 @@ exposed. Read the [whitepaper](docs/kairos-whitepaper.pdf).
 > pre-sale and no airdrop**. Anyone offering to sell you Kairos is scamming you.
 > The path to a real network is written down in [LAUNCH.md](LAUNCH.md).
 
+> [!NOTE]
+> **0.4.0 starts testnet 2.** The consensus rules changed (see
+> [CHANGELOG.md](CHANGELOG.md)), so the 0.3 chain was retired. Your wallet
+> and backup code keep working; balances start again from zero.
+
 ## What is different
 
 | Problem in Bitcoin                          | Kairos, from block 0                                      |
@@ -19,7 +24,9 @@ exposed. Read the [whitepaper](docs/kairos-whitepaper.pdf).
 | Security budget shrinks toward zero         | Smooth emission that settles into a small permanent reward |
 | Fee auctions are volatile                   | Predictable base fee (EIP-1559 style), which is burned    |
 | Quantum computers could break today's keys  | Every address also commits to a hash-based backup key     |
-| New nodes must replay all history           | Every block commits to the full set of unspent coins      |
+| New nodes must replay all history           | Every block commits to the unspent coins and the next base fee; new nodes start from a verified snapshot |
+| Hardware wallets cannot see what they pay   | Signatures commit to the amounts being spent              |
+| Soft forks need ad-hoc coordination         | Version-bit signalling built in; the quantum switch is the first deployment |
 | Difficulty adjusts only every two weeks     | Difficulty adjusts every block (ASERT)                    |
 | Small SHA-256 chains are easy to attack     | Merge-mining with Bitcoin supported                       |
 | Malleability, Merkle and replay quirks      | Excluded by design                                        |
@@ -57,7 +64,7 @@ run a node.
 
 | Command | What it does |
 |---|---|
-| `info` | Chain height, supply and fees |
+| `info` | Chain height, supply, fees and soft-fork state |
 | `balance` | Your coins (mining rewards unlock after 20 blocks) |
 | `address` | Your address, to receive coins |
 | `send <address> <amount>` | Pay someone, e.g. `send tkrs1... 2.5` |
@@ -92,6 +99,15 @@ These are built in, so you don't need to type them:
 - **Private experiments:** `--regtest` gives you a private chain with instant
   blocks; `python -m kairos demo` runs a three-node network on your machine.
 - **Wallet tools:** `python -m kairos --testnet wallet show | backup | restore <code>`
+- **Fast sync:** on a synced node, `python -m kairos --testnet utxo export kairos.snap`;
+  on a new node that has been running for a minute (so it has the headers),
+  `python -m kairos --testnet utxo import kairos.snap`. The snapshot is only
+  accepted if it matches the UTXO commitment in a header whose proof-of-work
+  the node has verified. The node then downloads only newer blocks.
+- **Soft forks:** miners signal readiness with `--mine --signal pq`; everyone
+  can watch the count with `rpc getdeploymentinfo`.
+- **Recovery:** `node --reindex` replays every block from disk if
+  `chainstate.dat` is ever in doubt.
 
 ## Run the tests
 
@@ -99,22 +115,23 @@ These are built in, so you don't need to type them:
 python -m unittest discover -s tests
 ```
 
-There are 55 tests, covering consensus rules, attacks on the network layer,
-merge-mining proofs, wallet encryption, crash recovery, peer discovery and
-fuzzing. They run with both signature backends, libsecp256k1 and the
-pure-Python reference (`KAIROS_FORCE_PY_CRYPTO=1`).
+There are 78 tests, covering consensus rules, soft-fork activation, attacks on
+the network layer, headers-first sync, merge-mining proofs, wallet encryption,
+crash recovery, fast restart, fast sync, peer discovery and fuzzing. They run
+with both signature backends, libsecp256k1 and the pure-Python reference
+(`KAIROS_FORCE_PY_CRYPTO=1`).
 
 ## Project layout
 
 | Path | Contents |
 |---|---|
 | `kairos/crypto.py` | Schnorr (libsecp256k1 or reference), Lamport, MuHash3072, Merkle trees, bech32m |
-| `kairos/params.py` | Consensus constants, emission, difficulty, base fee, networks |
+| `kairos/params.py` | Consensus constants, emission, difficulty, base fee, soft-fork deployments, networks |
 | `kairos/tx.py`, `block.py` | Transactions, dual-key addresses, blocks, proof-of-work |
 | `kairos/auxpow.py` | Merge-mining proofs |
-| `kairos/chain.py` | Validation, UTXO set, reorganisations, mempool, storage |
-| `kairos/wallet.py` | Encrypted deterministic wallet |
-| `kairos/node.py`, `addrman.py` | Peer-to-peer network, discovery, DoS protection |
+| `kairos/chain.py` | Validation, soft-fork state, UTXO set, reorganisations, mempool, block store, snapshots, fast sync |
+| `kairos/wallet.py` | Encrypted deterministic wallet with address rotation and rescan |
+| `kairos/node.py`, `addrman.py` | Peer-to-peer network, headers-first sync, discovery, DoS protection |
 | `kairos/rpc.py` | JSON-RPC server and client |
 | `docs/` | Whitepaper |
 | `deploy/` | Server setup script |
@@ -131,7 +148,7 @@ pure-Python reference (`KAIROS_FORCE_PY_CRYPTO=1`).
 
 ## Status and history
 
-See [CHANGELOG.md](CHANGELOG.md). Version 0.3.0 is live on the public testnet.
+See [CHANGELOG.md](CHANGELOG.md). Version 0.4.0 starts testnet 2.
 Mainnet requires independent audits, a second implementation and at least six
 months of public testing; see [LAUNCH.md](LAUNCH.md).
 

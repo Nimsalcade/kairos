@@ -1,6 +1,6 @@
 # Kairos mainnet launch gate
 
-Kairos 0.2.0 is **release-candidate software for a public testnet.** It is not yet
+Kairos 0.4.0 is **release-candidate software for a public testnet.** It is not yet
 fit to hold real value. This file is the checklist that decides when it is.
 Every item must be complete, with evidence published, before a mainnet
 genesis is announced. None of them can be skipped by a single author, however
@@ -26,9 +26,10 @@ capable, because each one exists to catch mistakes its author cannot see.
 - [ ] **Cross-implementation consensus testing**: both clients run the same
       chain, replay the same fuzzed blocks, and agree on every accept/reject.
       Two implementations that disagree is a chain split waiting to happen.
-- [ ] Replace JSON-over-TCP with a binary protocol; add headers-first sync,
-      compact block relay, peer discovery (addr gossip + DNS seeds), and a
-      UTXO database so nodes do not keep all blocks in memory.
+- [ ] Replace JSON-over-TCP with a binary protocol; add compact block relay
+      and DNS seeds, and a UTXO database (the reference node keeps the UTXO
+      set in memory; blocks are already on disk).
+- [x] Headers-first sync and peer discovery (addr gossip): 0.3.0 / 0.4.0.
 
 ## Gate 3 — Public testnet (minimum 6 months)
 
@@ -41,20 +42,20 @@ capable, because each one exists to catch mistakes its author cannot see.
 - [ ] Deliberate adversarial exercises: a reorg of 10+ blocks, a 51% attack
       by the organisers, mempool flooding, eclipse attempts, malformed-message
       floods, clock-skewed miners. Results published.
-- [ ] A rehearsal of the **quantum emergency**: activate `pq_emergency_height`
-      on testnet via the version-bit signalling mechanism (to be built, see
-      below) and sweep coins with Lamport signatures at scale.
+- [ ] A rehearsal of the **quantum emergency**: activate the `pq` deployment
+      on testnet by miner signalling (`--signal pq`) and sweep coins with
+      Lamport signatures at scale. (Mechanism built in 0.4.0; rehearsal pending.)
 - [ ] No consensus-affecting bug found in the final 90 days.
 
 ## Gate 4 — Still to design and build
 
-- [ ] Soft-fork activation mechanism (version bits are reserved for it; the
-      signalling and threshold logic is not yet written). Required before the
-      quantum switch is credible.
+- [x] Soft-fork activation mechanism (BIP8-style version bits, 0.4.0). The
+      quantum switch is its first deployment.
 - [ ] Standard HD wallet derivation (BIP32-style) so hardware wallets and
       other software can hold Kairos keys.
 - [ ] MuSig2 key aggregation for multi-party outputs.
-- [ ] UTXO snapshot distribution for the fast-sync path described in the paper.
+- [x] UTXO snapshot export/import verified against the header commitment
+      (0.4.0). Still to do: publish snapshots and their hashes with releases.
 - [ ] Final replacement of the Lamport path with a compact hash-based scheme
       (e.g. SPHINCS+) if reviewers recommend it.
 
@@ -70,11 +71,14 @@ capable, because each one exists to catch mistakes its author cannot see.
 - [ ] A written incident-response plan: who can publish an emergency release,
       how nodes are told, how a consensus bug is handled.
 
-## What 0.2.0 already provides
+## What 0.4.0 already provides
 
 See `CHANGELOG.md`. In short: merge-mining with Bitcoin, a constant-time
 signing backend with mainnet refusal to sign without it, differential tests
-proving both crypto backends agree, a hardened P2P layer, bounded memory
-pools and caches, crash-safe storage, checkpoints, encrypted wallets with
-checksummed backups, an authenticated Bitcoin-style JSON-RPC, a testnet, and
-41 tests including fuzzing and live-network attack scenarios.
+proving both crypto backends agree, amount-committing signatures, soft-fork
+activation by signalling, headers-first sync with multi-peer download, a
+hardened P2P layer, bounded memory pools and caches, crash-safe storage with
+fast restart, fast sync from verified UTXO snapshots, checkpoints, encrypted
+wallets with address rotation and checksummed backups, an authenticated
+Bitcoin-style JSON-RPC, a testnet, and 78 tests including fuzzing and
+live-network attack scenarios.

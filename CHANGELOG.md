@@ -1,5 +1,72 @@
 # Changelog
 
+## 0.4.0 — testnet 2: consensus v2, headers-first, fast sync
+
+**The public testnet was reset.** 0.4.0 changes the signature hash and the
+block header, so it is a new chain ("testnet 2") with its own chain id, magic
+and genesis. Testnet coins never had value; wallets keep working (same seed,
+same addresses) with a zero balance. Data directories from 0.3 are ignored
+(`blocks-v2.dat` is left untouched; the new files are `blocks-v3.dat`,
+`chainstate.dat`, `headers.dat`). The whitepaper PDF still describes the
+124-byte 0.3 header; the code is authoritative until it is revised.
+
+Consensus (hard fork)
+- The signature hash commits to the value and address of every coin being
+  spent, so a signer always knows what it pays and what fee it leaves without
+  the previous transactions (the problem BIP143 fixed for hardware wallets).
+- Soft-fork activation by miner signalling in header version bits 16..28
+  (BIP8-style, height based; 95 % of a 2016-block window on mainnet and
+  testnet). The post-quantum emergency switch is the first deployment and
+  never times out; once ACTIVE, Schnorr spends are invalid and only Lamport
+  spends are accepted. `pq_emergency_height` remains as a flag-day override.
+- The header gains `fee`, the base fee for the next block (132 bytes). With
+  `utxo_root` the header now commits to everything a node needs to continue
+  from a snapshot, and light clients read the fee level from headers.
+- Context-free block checks reject targets above the proof-of-work limit.
+
+Network (protocol 4; 0.3 nodes are disconnected politely, never banned)
+- Headers-first sync: a peer's whole chain of headers (with merge-mining
+  proofs) is validated for work, schedule and timestamps before any body is
+  requested; bodies are then fetched in order along the most-work header
+  chain from every peer that has them, 16 in flight per peer, and stalled
+  requests move to another peer after 60 s. Nobody can make a node download
+  a chain that does not carry the most work. `getblocks` is gone.
+- Every exception while handling a message counts as misbehaviour. 0.3.0 let
+  deeply nested JSON (RecursionError) and `"height": 1e999` (OverflowError)
+  kill the reader thread and leave zombie connections holding slots.
+- JSON numbers used as integers are validated (no floats, bools, negatives).
+- The orphan pool is bounded in bytes and age, and an orphan must claim at
+  least 1/64 of the tip's per-block work: trivially mined junk is not stored.
+
+Node and storage
+- Fast sync: `kairos utxo export FILE` on any synced node, `kairos utxo
+  import FILE` on a new one. The snapshot is adopted only if its MuHash
+  digest equals the `utxo_root` of a header the node has verified
+  proof-of-work for; history below it is never downloaded and cannot be
+  reorganised.
+- Fast restart: clean shutdown (and every 2000 blocks) writes
+  `chainstate.dat`; startup rebuilds the index from the block file without
+  re-validating snapshot-covered blocks. `--reindex` forces a full replay.
+- Blocks are read back from disk through a small cache instead of being held
+  in memory forever. Best-chain selection is incremental (sync was quadratic).
+- Reorganisations recover ancestors' UTXO commitments arithmetically from the
+  child's, so only the tip's MuHash value is kept.
+
+Wallet
+- Lamport one-time keys are recorded as spent on disk *before* a signature
+  exists: a crash mid-signing can never lead to a second signature.
+- A fresh address for every mined block and every change output, so a Schnorr
+  public key is revealed at most once. Restore rescans the chain with a gap
+  limit of 20 and finds every address.
+- The scrypt key is derived once per session rather than on every save.
+
+RPC/CLI: `getblockchaininfo` shows `headers`, `assumed_height`, `pq_only` and
+`softforks`; new `getdeploymentinfo`, `setsignal`, `rescanwallet`,
+`dumputxoset`, `loadutxoset`; `node --signal pq`, `node --reindex`; the
+console `info` command shows soft-fork state.
+
+Tests: 78 (23 new), run with both signature backends.
+
 ## 0.3.0 — the network heals and finds itself
 
 Networking (protocol 3; interoperates with 0.2.x)
