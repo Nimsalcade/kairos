@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Kairos</title>
+<meta name="description" content="Kairos: a peer-to-peer electronic cash system built to last. Public testnet 2, no sale, no premine.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,300..800&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  color-scheme:dark;
+  --ground:#0B0E14; --surface:#12161F; --raised:#181D28; --line:#242A37; --line-strong:#343B4B;
+  --ink:#E9E6DF; --ink-2:#B9B6AE; --muted:#8B9099; --brass:#C9A15C; --brass-bright:#E4C079; --brass-ink:#0B0E14;
+  --ok:#5DBB7A; --warn:#D98B4A;
+  --chart-kairos:#B5843A; --chart-bitcoin:#5B8DCB; --grid:#1E2431;
+  --display:"Bricolage Grotesque",ui-sans-serif,system-ui,sans-serif;
+  --serif:"Newsreader",Georgia,"Times New Roman",serif;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --gutter:clamp(16px,4vw,48px); --measure:66ch;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    color-scheme:light;
+    --ground:#F5F4F0; --surface:#FFFFFF; --raised:#FBFAF7; --line:#DDD9CF; --line-strong:#C9C4B8;
+    --ink:#14181F; --ink-2:#3A3F49; --muted:#5B6270; --brass:#8C6A2B; --brass-bright:#A26E12; --brass-ink:#FFFFFF;
+    --ok:#2E8B57; --warn:#B25E1E;
+    --chart-kairos:#A26E12; --chart-bitcoin:#2A6DB8; --grid:#E6E2D8;
+  }
+}
+:root[data-theme="light"]{
+  color-scheme:light;
+  --ground:#F5F4F0; --surface:#FFFFFF; --raised:#FBFAF7; --line:#DDD9CF; --line-strong:#C9C4B8;
+  --ink:#14181F; --ink-2:#3A3F49; --muted:#5B6270; --brass:#8C6A2B; --brass-bright:#A26E12; --brass-ink:#FFFFFF;
+  --ok:#2E8B57; --warn:#B25E1E;
+  --chart-kairos:#A26E12; --chart-bitcoin:#2A6DB8; --grid:#E6E2D8;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--serif);font-size:17px;line-height:1.55;
+  -webkit-font-smoothing:antialiased;position:relative;padding-inline:var(--gutter);padding-block:0}
+body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;opacity:.055;mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='200' height='200' filter='url(%23n)' opacity='1'/></svg>")}
+a{color:inherit;text-decoration-color:var(--brass);text-underline-offset:3px}
+a:hover{color:var(--brass-bright)}
+:focus-visible{outline:2px solid var(--brass);outline-offset:3px}
+h1,h2,h3{font-family:var(--display);font-weight:600;line-height:1.05;letter-spacing:-.01em;text-wrap:balance;margin:0}
+p{margin:0}
+code,kbd,.mono{font-family:var(--mono);font-size:.86em}
+.eyebrow{font-family:var(--display);font-size:.74rem;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--brass);display:flex;align-items:center;gap:.7em}
+.eyebrow::before{content:"";width:1.6em;height:1px;background:var(--brass)}
+.muted{color:var(--muted)}
+.num{font-variant-numeric:tabular-nums}
+
+/* ---------- frame: rail + page ---------- */
+.frame{position:relative;z-index:1;max-width:1240px;margin:0 auto;display:grid;grid-template-columns:1fr;gap:0}
+@media (min-width:1100px){.frame{grid-template-columns:200px minmax(0,1fr);column-gap:56px}}
+.rail{display:none}
+@media (min-width:1100px){
+  .rail{display:block;position:sticky;top:env(safe-area-inset-top,0px);align-self:start;padding-block:36px 40px;height:100vh}
+  .rail .mark{font-family:var(--display);font-weight:700;font-size:1.05rem;letter-spacing:.06em;text-transform:uppercase;margin-bottom:44px;display:flex;align-items:center;gap:.6em}
+  .rail nav{display:grid;gap:2px;border-left:1px solid var(--line)}
+  .rail nav a{display:block;padding:.45em 0 .45em 16px;margin-left:-1px;border-left:1px solid transparent;text-decoration:none;
+    font-family:var(--display);font-size:.8rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+  .rail nav a:hover{color:var(--ink)}
+  .rail nav a.on{color:var(--brass);border-left-color:var(--brass)}
+  .rail .foot{position:absolute;bottom:40px;left:0;font-family:var(--mono);font-size:.68rem;color:var(--muted);line-height:1.7}
+}
+.coin{width:14px;height:14px;border-radius:50%;border:1.5px solid var(--brass);position:relative;flex:none}
+.coin::after{content:"";position:absolute;inset:3px;border-radius:50%;background:var(--brass)}
+
+.page{min-width:0}
+.top{display:flex;justify-content:space-between;align-items:center;gap:16px;padding-block:22px 0;font-family:var(--display);font-size:.8rem;letter-spacing:.06em;text-transform:uppercase}
+.top .mark{font-weight:700;display:flex;align-items:center;gap:.6em}
+@media (min-width:1100px){.top .mark{visibility:hidden}}
+.top .links{display:flex;gap:18px;flex-wrap:wrap;justify-content:flex-end}
+.top .links a{text-decoration:none;color:var(--muted)}
+.top .links a:hover{color:var(--brass-bright)}
+.live{display:inline-flex;align-items:center;gap:.5em;color:var(--ink-2)}
+.live i{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px color-mix(in oklab,var(--ok) 25%,transparent)}
+
+section{padding-block:clamp(56px,9vw,112px) 0;border-top:1px solid var(--line);margin-top:clamp(56px,9vw,112px)}
+section:first-of-type{border-top:0;margin-top:0;padding-top:clamp(40px,7vw,88px)}
+.sec-head{display:grid;gap:14px;margin-bottom:clamp(28px,4vw,44px);max-width:var(--measure)}
+.sec-head h2{font-size:clamp(1.8rem,3.6vw,2.7rem);font-stretch:90%}
+.lede{font-size:1.12rem;color:var(--ink-2);max-width:var(--measure)}
+
+/* ---------- hero ---------- */
+.hero{display:grid;gap:40px;align-items:start}
+@media (min-width:900px){.hero{grid-template-columns:minmax(0,1.25fr) minmax(300px,.85fr);gap:56px}}
+.hero h1{font-size:clamp(2.7rem,7.2vw,6.4rem);font-weight:750;font-stretch:78%;line-height:.95;letter-spacing:-.02em;margin-top:18px}
+.hero h1 em{font-style:normal;color:var(--brass)}
+.hero .lede{margin-top:26px}
+.cta{display:flex;flex-wrap:wrap;gap:12px;margin-top:32px}
+.btn{display:inline-flex;align-items:center;gap:.6em;padding:.8em 1.25em;border-radius:3px;text-decoration:none;
+  font-family:var(--display);font-size:.9rem;font-weight:600;letter-spacing:.04em;border:1px solid var(--line-strong);color:var(--ink);transition:transform .15s,border-color .15s}
+.btn:hover{transform:translateY(-1px);border-color:var(--brass);color:var(--ink)}
+.btn.primary{background:var(--brass);color:var(--brass-ink);border-color:var(--brass)}
+.btn.primary:hover{background:var(--brass-bright);color:var(--brass-ink)}
+.rise{animation:rise .7s cubic-bezier(.2,.7,.2,1) both}
+.rise.d1{animation-delay:.08s}.rise.d2{animation-delay:.16s}.rise.d3{animation-delay:.24s}.rise.d4{animation-delay:.32s}
+@keyframes rise{from{opacity:.001;transform:translateY(14px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.rise{animation:none}html{scroll-behavior:auto}}
+
+.plate{background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:22px 22px 20px;position:relative;overflow:hidden;
+  box-shadow:0 30px 60px -40px rgba(0,0,0,.6)}
+.plate::before{content:"";position:absolute;inset:8px;border:1px solid var(--line);border-radius:2px;pointer-events:none}
+.plate .k{font-family:var(--display);font-size:.7rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
+.plate .row{padding:12px 0;border-top:1px solid var(--line)}
+.plate .row:first-of-type{border-top:0;padding-top:4px}
+.plate .hash{font-family:var(--mono);font-size:.78rem;line-height:1.6;word-break:break-all;color:var(--ink)}
+.plate .hash b{color:var(--brass);font-weight:500}
+.plate .msg{font-family:var(--serif);font-style:italic;font-size:1.06rem;color:var(--ink-2)}
+.plate .kv{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;font-family:var(--mono);font-size:.78rem}
+.plate .kv span:nth-child(odd){color:var(--muted)}
+
+/* ---------- ledger ---------- */
+.ledger{border-top:1px solid var(--line-strong)}
+.ledger .r{display:grid;grid-template-columns:1fr;gap:6px 32px;padding:18px 0;border-bottom:1px solid var(--line);transition:background .15s}
+@media (min-width:760px){.ledger .r{grid-template-columns:minmax(0,1fr) minmax(0,1.35fr)}}
+.ledger .r:hover{background:color-mix(in oklab,var(--surface) 60%,transparent)}
+.ledger .h{font-family:var(--display);font-size:.72rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);padding:10px 0}
+.ledger .was{color:var(--muted);font-family:var(--serif)}
+.ledger .now{color:var(--ink)}
+.ledger .now::before{content:"→ ";color:var(--brass)}
+@media (min-width:760px){.ledger .now::before{content:""}}
+
+/* ---------- figures & stats ---------- */
+.stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);margin-block:36px}
+@media (min-width:760px){.stats{grid-template-columns:repeat(4,minmax(0,1fr))}}
+.stat{background:var(--ground);padding:18px 18px 16px}
+.stat b{display:block;font-family:var(--display);font-size:clamp(1.6rem,3vw,2.2rem);font-weight:600;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1.1}
+.stat b small{font-size:.5em;color:var(--muted);font-weight:500;margin-left:.15em}
+.stat span{display:block;font-family:var(--display);font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-top:8px}
+.formula{font-family:var(--mono);font-size:.86rem;color:var(--ink-2);background:var(--surface);border:1px solid var(--line);padding:14px 16px;border-radius:3px;overflow-x:auto;white-space:nowrap}
+figure{margin:0}
+figure img{display:block;width:100%;height:auto;border:1px solid var(--line);border-radius:4px;background:#FFFFFF}
+figcaption{font-size:.9rem;color:var(--muted);margin-top:10px}
+.two{display:grid;gap:32px;align-items:start}
+@media (min-width:900px){.two{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
+.prose{display:grid;gap:16px;max-width:var(--measure)}
+.prose h3{font-size:1.15rem;font-weight:600}
+
+/* ---------- chart ---------- */
+.chart{background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:18px 18px 12px;margin-block:8px 0}
+.chart-top{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:baseline;margin-bottom:8px}
+.chart-top h3{font-size:1rem;font-weight:600}
+.legend{display:flex;gap:18px;flex-wrap:wrap;font-family:var(--display);font-size:.78rem;letter-spacing:.04em;color:var(--ink-2)}
+.legend i{display:inline-block;width:14px;height:2px;vertical-align:middle;margin-right:.5em;border-radius:1px}
+.chart svg{display:block;width:100%;height:auto;overflow:visible}
+.chart text{font-family:var(--mono);font-size:11px;fill:var(--muted)}
+.chart .lab{font-family:var(--display);font-size:11.5px;fill:var(--ink-2);letter-spacing:.03em}
+.tip{position:absolute;pointer-events:none;background:var(--raised);border:1px solid var(--line-strong);border-radius:3px;padding:8px 10px;
+  font-family:var(--mono);font-size:.74rem;line-height:1.55;color:var(--ink);white-space:nowrap;transform:translate(-50%,calc(-100% - 12px));opacity:0;transition:opacity .12s}
+.tip b{color:var(--muted);font-weight:500}
+.chart-wrap{position:relative}
+details.table{margin-top:14px}
+details.table summary{cursor:pointer;font-family:var(--display);font-size:.78rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+table{border-collapse:collapse;width:100%;font-family:var(--mono);font-size:.8rem;margin-top:12px}
+th,td{text-align:right;padding:7px 10px;border-bottom:1px solid var(--line)}
+th:first-child,td:first-child{text-align:left}
+th{font-weight:500;color:var(--muted)}
+.tscroll{overflow-x:auto}
+
+/* ---------- state rail ---------- */
+.states{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0;border:1px solid var(--line);border-radius:4px;overflow:hidden;background:var(--surface);margin-block:28px 8px}
+.states div{padding:16px 14px;border-left:1px solid var(--line);min-width:0}
+.states div:first-child{border-left:0}
+.states b{display:block;font-family:var(--mono);font-size:.78rem;letter-spacing:.06em;color:var(--brass)}
+.states span{display:block;font-size:.86rem;color:var(--muted);margin-top:6px;line-height:1.4}
+@media (max-width:640px){.states{grid-template-columns:1fr 1fr}.states div:nth-child(3){border-left:0;border-top:1px solid var(--line)}.states div:nth-child(4){border-top:1px solid var(--line)}}
+
+/* ---------- join ---------- */
+.term{background:#0A0C11;color:#E9E6DF;border:1px solid var(--line-strong);border-radius:4px;padding:16px 18px;font-family:var(--mono);font-size:.84rem;line-height:1.75;overflow-x:auto;position:relative}
+.term .c{color:#6F7684}
+.term .p{color:#C9A15C;user-select:none}
+.copy{position:absolute;top:10px;right:10px;font-family:var(--display);font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;background:transparent;color:#B9B6AE;border:1px solid #343B4B;border-radius:3px;padding:.4em .7em;cursor:pointer}
+.copy:hover{color:#E4C079;border-color:#C9A15C}
+.seeds{display:grid;grid-template-columns:1fr;gap:1px;background:var(--line);border:1px solid var(--line);margin-top:22px}
+@media (min-width:640px){.seeds{grid-template-columns:repeat(3,1fr)}}
+.seeds div{background:var(--ground);padding:14px 16px}
+.seeds b{display:block;font-family:var(--display);font-size:.9rem;font-weight:600}
+.seeds code{color:var(--muted);font-size:.78rem}
+.cmds{display:grid;grid-template-columns:1fr;gap:10px 24px;margin-top:22px;font-size:.98rem}
+@media (min-width:640px){.cmds{grid-template-columns:repeat(2,1fr)}}
+.cmds div{display:grid;grid-template-columns:8.5em 1fr;gap:12px;align-items:baseline;padding:8px 0;border-bottom:1px solid var(--line)}
+.cmds code{color:var(--brass-bright)}
+
+/* ---------- status ---------- */
+.notice{border:1px solid var(--warn);border-left-width:4px;border-radius:3px;padding:16px 18px;background:color-mix(in oklab,var(--warn) 7%,var(--surface));display:grid;gap:8px;max-width:var(--measure)}
+.notice b{font-family:var(--display);font-weight:600}
+.gates{display:grid;gap:0;margin-top:28px;border-top:1px solid var(--line-strong);max-width:var(--measure)}
+.gate{display:grid;grid-template-columns:22px 1fr;gap:14px;align-items:start;padding:13px 0;border-bottom:1px solid var(--line)}
+.gate i{width:16px;height:16px;border:1px solid var(--line-strong);border-radius:2px;margin-top:4px;position:relative}
+.gate.done i{border-color:var(--ok);background:color-mix(in oklab,var(--ok) 18%,transparent)}
+.gate.done i::after{content:"";position:absolute;left:5px;top:1px;width:4px;height:9px;border:solid var(--ok);border-width:0 2px 2px 0;transform:rotate(45deg)}
+.gate span{color:var(--ink-2)}
+.gate.done span{color:var(--ink)}
+
+footer{margin-top:clamp(64px,10vw,120px);padding-block:32px 40px;border-top:1px solid var(--line);display:grid;gap:18px;font-size:.9rem;color:var(--muted)}
+footer .links{display:flex;flex-wrap:wrap;gap:8px 22px;font-family:var(--display);font-size:.8rem;letter-spacing:.06em;text-transform:uppercase}
+footer .links a{text-decoration:none;color:var(--ink-2)}
+footer .links a:hover{color:var(--brass-bright)}
+footer p{max-width:var(--measure)}
+</style>
+</head>
+<body>
+<div class="frame">
+  <aside class="rail" aria-label="Sections">
+    <div class="mark"><span class="coin"></span>Kairos</div>
+    <nav id="railnav">
+      <a href="#thesis">Thesis</a>
+      <a href="#ledger">The ledger</a>
+      <a href="#emission">Emission</a>
+      <a href="#quantum">Quantum switch</a>
+      <a href="#sync">State &amp; sync</a>
+      <a href="#join">Run a node</a>
+      <a href="#status">Status</a>
+    </nav>
+    <div class="foot">testnet 2 · v0.4.1<br>2-minute blocks<br>21,000,000 + tail</div>
+  </aside>
+
+  <main class="page">
+    <header class="top">
+      <div class="mark"><span class="coin"></span>Kairos</div>
+      <div class="links">
+        <span class="live"><i></i>Testnet 2 live</span>
+        <a href="https://github.com/Nimsalcade/kairos">GitHub</a>
+        <a href="https://github.com/Nimsalcade/kairos/blob/main/docs/kairos-whitepaper.md">Whitepaper</a>
+        <a href="https://bitcointalk.org/index.php?topic=5594931.0">Thread</a>
+      </div>
+    </header>
+
+    <section id="thesis" class="hero">
+      <div>
+        <div class="eyebrow rise">A peer-to-peer electronic cash system</div>
+        <h1 class="rise d1">Money should outlive <em>the machines</em> that mint it.</h1>
+        <p class="lede rise d2">Kairos keeps what seventeen years of Bitcoin proved: SHA-256d proof-of-work, unspent outputs, the chain with the most work. It fixes, from the first block, what those years exposed: a security budget headed to zero, a fee market that swings, keys a quantum computer could break, and a history every new node must replay.</p>
+        <div class="cta rise d3">
+          <a class="btn primary" href="#join">Run a node</a>
+          <a class="btn" href="https://github.com/Nimsalcade/kairos/blob/main/docs/kairos-whitepaper.md">Read the whitepaper</a>
+        </div>
+      </div>
+      <div class="plate rise d4" aria-label="Genesis block of testnet 2">
+        <div class="row">
+          <div class="k">Genesis · testnet 2</div>
+          <div class="hash"><b>000008fa</b>96a695a8e30751146a123e55ee730693362e0acba2c43ce704b73c51</div>
+        </div>
+        <div class="row">
+          <div class="k">Coinbase message</div>
+          <div class="msg">22/Sep/2026 Kairos genesis: money should outlive the machines that mint it</div>
+        </div>
+        <div class="row">
+          <div class="kv">
+            <span>time</span><span>2026-09-24 00:00:00 UTC</span>
+            <span>output</span><span>0 KRS, unspendable</span>
+            <span>header</span><span>132 bytes</span>
+            <span>premine</span><span>none</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="ledger">
+      <div class="sec-head">
+        <div class="eyebrow">The ledger</div>
+        <h2>What operation exposed, and what Kairos does from block 0</h2>
+        <p class="lede">Every mechanism here has been deployed or analysed somewhere. The contribution is choosing them together, fixing them into consensus at genesis, and showing that they compose.</p>
+      </div>
+      <div class="ledger">
+        <div class="r"><div class="h">In Bitcoin</div><div class="h">In Kairos</div></div>
+        <div class="r"><div class="was">The block subsidy halves toward zero; long-run security depends entirely on fees.</div><div class="now">Smooth emission with no cliffs that settles into a permanent 0.6 KRS per block, and a burned base fee that lets usage offset it.</div></div>
+        <div class="r"><div class="was">Fees are a blind auction that swings by orders of magnitude.</div><div class="now">A per-byte base fee adjusted every block, capped at 12.5% per step, burned rather than paid to miners. The fee for the next block is written into every header.</div></div>
+        <div class="r"><div class="was">A large quantum computer could recover keys from exposed public keys.</div><div class="now">Every address commits to a Schnorr key and a hash-based Lamport key. A built-in signalling mechanism lets the network switch spends to the hash-based key.</div></div>
+        <div class="r"><div class="was">A new node must replay every transaction since 2009.</div><div class="now">Every header commits to the full set of unspent coins. A new node verifies a snapshot against proof-of-work and downloads only what came after.</div></div>
+        <div class="r"><div class="was">Signatures do not commit to the amounts being spent; hardware wallets needed BIP143 to see what they pay.</div><div class="now">The signature hash commits to the value and address of every coin spent, and to the chain identifier, so signers know what they pay and replay across chains is impossible.</div></div>
+        <div class="r"><div class="was">Difficulty retargets every 2016 blocks, which oscillates and invites timestamp games.</div><div class="now">Difficulty adjusts every block on an absolute schedule (ASERT, two-day half-life). Two-minute blocks.</div></div>
+        <div class="r"><div class="was">A small SHA-256 chain can be rewritten with rented hash power.</div><div class="now">Merge-mining with Bitcoin from day one, in the format pools already use.</div></div>
+        <div class="r"><div class="was">Malleability, Merkle ambiguity, duplicate coinbases and replay all needed patches.</div><div class="now">Excluded by construction: witness-free identifiers, tagged Merkle hashing, height in the header and coinbase, chain id in every signature.</div></div>
+      </div>
+    </section>
+
+    <section id="emission">
+      <div class="sec-head">
+        <div class="eyebrow">Emission</div>
+        <h2>A security budget with a floor</h2>
+        <p class="lede">Each block pays a fixed fraction of what remains on a 21 million curve, never less than the tail. There is no scheduled moment when a large share of hash power becomes unprofitable at once.</p>
+      </div>
+      <div class="formula">subsidy = max( 0.6 KRS , (21,000,000 KRS − issued) / 2<sup>21</sup> )</div>
+      <div class="stats">
+        <div class="stat"><b class="num">10.01<small>KRS</small></b><span>First block</span></div>
+        <div class="stat"><b class="num">5.5<small>years</small></b><span>Half the curve issued</span></div>
+        <div class="stat"><b class="num">0.6<small>KRS</small></b><span>Per block, forever</span></div>
+        <div class="stat"><b class="num">60<small>motes/B</small></b><span>Base fee that offsets the tail</span></div>
+      </div>
+      <div class="chart">
+        <div class="chart-top">
+          <h3>Cumulative issuance, first forty years</h3>
+          <div class="legend"><span><i style="background:var(--chart-kairos)"></i>Kairos, 2-minute blocks</span><span><i style="background:var(--chart-bitcoin)"></i>Bitcoin, 10-minute blocks</span></div>
+        </div>
+        <div class="chart-wrap" id="chartwrap">
+          <svg id="chart" viewBox="0 0 760 340" role="img" aria-label="Cumulative issuance of Kairos and Bitcoin over forty years, computed from the consensus rules"></svg>
+          <div class="tip" id="tip"></div>
+        </div>
+        <details class="table"><summary>Values by year</summary><div class="tscroll"><table id="tbl"><thead><tr><th>Years since genesis</th><th>Kairos, KRS</th><th>Bitcoin, BTC</th></tr></thead><tbody></tbody></table></div></details>
+      </div>
+      <p class="muted" style="margin-top:12px;font-size:.9rem">Computed in this page from the subsidy rule, block by block, with 365.25-day years. Before the fee burn: net growth is the tail minus what blocks burn, and it reaches zero when the average block burns 0.6 KRS.</p>
+    </section>
+
+    <section id="quantum">
+      <div class="sec-head">
+        <div class="eyebrow">Quantum switch</div>
+        <h2>Prepared at genesis, not at the moment of crisis</h2>
+        <p class="lede">A large quantum computer breaks elliptic-curve keys. Hash functions it only weakens. Every Kairos address already holds a hash-based key in reserve, and the rules already contain the mechanism to switch to it.</p>
+      </div>
+      <div class="two">
+        <figure>
+          <img src="figures/fig1-address.svg" alt="A Kairos address commits to a Schnorr public key and the hash of a Lamport public key" width="920" height="420" loading="lazy">
+          <figcaption>An address is the hash of a Schnorr key and a Lamport key root. Neither key is revealed until the coins move.</figcaption>
+        </figure>
+        <div class="prose">
+          <h3>How the switch works</h3>
+          <p>Miners signal readiness with a bit in the block header. Once 95% of a 2016-block window signals, the change locks in, and one window later it is active: elliptic-curve spends become invalid and every coin can still be spent with its Lamport key. Nobody's coins are frozen and none are stolen.</p>
+          <p>The switch has a start height of zero and no timeout, so it stays armed for the life of the chain. For the case where miners cannot be trusted to signal in time, an emergency release can fix it at a flag-day height.</p>
+          <p>The first rehearsal is running on testnet 2 now. Follow the announcement thread for the activation height.</p>
+        </div>
+      </div>
+      <div class="states" aria-label="Deployment states">
+        <div><b>DEFINED</b><span>Before the start height. The bit is ignored.</span></div>
+        <div><b>STARTED</b><span>Miners signal. Counted per 2016-block window.</span></div>
+        <div><b>LOCKED_IN</b><span>1916 of 2016 signalled. Activation is now certain.</span></div>
+        <div><b>ACTIVE</b><span>One window later. Only Lamport spends are valid.</span></div>
+      </div>
+    </section>
+
+    <section id="sync">
+      <div class="sec-head">
+        <div class="eyebrow">State &amp; sync</div>
+        <h2>Every header commits to the whole state</h2>
+        <p class="lede">The commitment is a MuHash over the multiset of unspent outputs: adding a coin multiplies it in, spending one divides it out. Any node maintains it as it validates, in constant time per coin.</p>
+      </div>
+      <figure>
+        <img src="figures/fig2-header-chain.svg" alt="Three consecutive 132-byte headers, each committing to its parent, its transactions and the resulting UTXO set and next base fee" width="1200" height="420" loading="lazy">
+        <figcaption>The 132-byte header in serialisation order. The UTXO root and the next base fee are the state a node needs to continue from a snapshot.</figcaption>
+      </figure>
+      <div class="two" style="margin-top:32px">
+        <div class="prose">
+          <h3>Fast sync</h3>
+          <p>A new node downloads headers, validates their work, fetches a UTXO snapshot from anyone, and adopts it only if its hash equals the commitment in a header it has verified. Issued supply is recomputed from the schedule; burned supply follows by conservation; the base fee is read from the header. History below the snapshot is never downloaded and cannot be reorganised.</p>
+        </div>
+        <div class="prose">
+          <h3>Headers first</h3>
+          <p>A peer's whole chain of headers is checked for work, schedule and timestamps before a single block body is requested. Bodies are then fetched in order from every peer that has them. No peer can make a node download a chain that does not carry the most work.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="join">
+      <div class="sec-head">
+        <div class="eyebrow">Run a node</div>
+        <h2>Join testnet 2 in three commands</h2>
+        <p class="lede">Python 3.9 or newer, macOS or Linux. Your node finds the network through the built-in seed nodes. The first start creates an encrypted wallet and prints a backup code; write it down.</p>
+      </div>
+      <div class="term" id="term">
+        <button class="copy" id="copybtn" type="button" aria-label="Copy commands">Copy</button>
+        <div><span class="p">$ </span>git clone https://github.com/Nimsalcade/kairos.git &amp;&amp; cd kairos</div>
+        <div><span class="p">$ </span>python3 -m venv .venv &amp;&amp; .venv/bin/pip install coincurve</div>
+        <div><span class="p">$ </span>.venv/bin/python -m kairos --testnet node --mine</div>
+        <div class="c"># leave out --mine to only validate and relay; add --signal pq to signal for the quantum switch</div>
+      </div>
+      <div class="seeds" aria-label="Seed nodes">
+        <div><b>Frankfurt</b><code>95.179.255.186:19333</code></div>
+        <div><b>Singapore</b><code>45.76.176.39:19333</code></div>
+        <div><b>Miami</b><code>207.246.114.19:19333</code></div>
+      </div>
+      <div class="cmds">
+        <div><code>info</code><span>Height, supply, base fee, soft-fork state</span></div>
+        <div><code>balance</code><span>Your coins; rewards unlock after 20 blocks</span></div>
+        <div><code>address</code><span>A fresh address to receive coins</span></div>
+        <div><code>send &lt;addr&gt; &lt;amount&gt;</code><span>Pay someone; Lamport-signed once the switch is active</span></div>
+        <div><code>utxo export</code><span>Write a snapshot other nodes can start from</span></div>
+        <div><code>rpc getdeploymentinfo</code><span>Watch the signalling count for the quantum switch</span></div>
+      </div>
+    </section>
+
+    <section id="status">
+      <div class="sec-head">
+        <div class="eyebrow">Status</div>
+        <h2>What it is, and what it is not yet</h2>
+      </div>
+      <div class="notice">
+        <b>Kairos is an experimental, unaudited public testnet.</b>
+        <p>Testnet coins have no value and never will. There is no mainnet, no token sale, no presale and no airdrop. Anyone offering to sell you Kairos is scamming you. If a mainnet ever happens it will be a fair launch, with the software and the genesis timing published before anyone mines.</p>
+      </div>
+      <div class="gates">
+        <div class="gate done"><i></i><span>Soft-fork activation by miner signalling, built into consensus</span></div>
+        <div class="gate done"><i></i><span>Headers-first synchronisation and peer discovery</span></div>
+        <div class="gate done"><i></i><span>UTXO snapshot export and import, verified against the header commitment</span></div>
+        <div class="gate done"><i></i><span>Public testnet on three continents; 82 tests on two signature backends</span></div>
+        <div class="gate"><i></i><span>Quantum-emergency rehearsal on the live testnet (in progress)</span></div>
+        <div class="gate"><i></i><span>Independent consensus and cryptography audits</span></div>
+        <div class="gate"><i></i><span>A second implementation, cross-tested against this one</span></div>
+        <div class="gate"><i></i><span>At least six months of public testnet with no consensus bug in the final ninety days</span></div>
+      </div>
+      <p class="muted" style="margin-top:22px;max-width:var(--measure)">The full list of conditions for a mainnet is in <a href="https://github.com/Nimsalcade/kairos/blob/main/LAUNCH.md">LAUNCH.md</a>. Known limitations and the private reporting channel for security problems are in <a href="https://github.com/Nimsalcade/kairos/blob/main/SECURITY.md">SECURITY.md</a>.</p>
+    </section>
+
+    <footer>
+      <div class="links">
+        <a href="https://github.com/Nimsalcade/kairos">Source</a>
+        <a href="https://github.com/Nimsalcade/kairos/blob/main/docs/kairos-whitepaper.md">Whitepaper</a>
+        <a href="https://github.com/Nimsalcade/kairos/releases/tag/v0.4.1">Release 0.4.1</a>
+        <a href="https://github.com/Nimsalcade/kairos/blob/main/CHANGELOG.md">Changelog</a>
+        <a href="https://bitcointalk.org/index.php?topic=5594931.0">Announcement thread</a>
+      </div>
+      <p>The design and reference implementation were drafted with the help of Claude, an AI model made by Anthropic. Kairos is an independent project and is not affiliated with or endorsed by Anthropic. Released under the MIT License.</p>
+    </footer>
+  </main>
+</div>
+
+<script>
+(function(){
+  // ---- emission, computed from the consensus rule ----
+  var COIN=1e8, SUPPLY=21e6*COIN, TAIL=0.6*COIN, DIV=2097152;             // 2^21
+  var YEAR=365.25*86400, KB=YEAR/120, BB=YEAR/600, YEARS=40;
+  var kairos=[0], g=0, nextMark=Math.floor(KB), N=Math.floor(KB*YEARS);
+  for(var b=1;b<=N;b++){ g+=Math.max(TAIL,Math.floor((SUPPLY-g)/DIV)); if(b===nextMark){kairos.push(g/COIN); nextMark=Math.floor(KB*(kairos.length));} }
+  var btc=[0], gb=0, nb=Math.floor(BB), NB=Math.floor(BB*YEARS);
+  for(var c=1;c<=NB;c++){ gb+=Math.floor(50e8/Math.pow(2,Math.floor((c-1)/210000))); if(c===nb){btc.push(gb/1e8); nb=Math.floor(BB*(btc.length));} }
+
+  var svg=document.getElementById('chart'), ns='http://www.w3.org/2000/svg';
+  var W=760,H=340,L=56,R=110,T=16,B=40, pw=W-L-R, ph=H-T-B, ymax=24e6;
+  function X(y){return L+pw*y/YEARS} function Y(v){return T+ph*(1-v/ymax)}
+  function el(n,a,txt){var e=document.createElementNS(ns,n);for(var k in a)e.setAttribute(k,a[k]);if(txt!=null)e.textContent=txt;svg.appendChild(e);return e}
+  [0,6,12,18,24].forEach(function(m){var v=m*1e6;el('line',{x1:L,x2:L+pw,y1:Y(v),y2:Y(v),stroke:'var(--grid)','stroke-width':1});el('text',{x:L-8,y:Y(v)+4,'text-anchor':'end'},m?m+'M':'0')});
+  [0,10,20,30,40].forEach(function(y){el('text',{x:X(y),y:H-B+18,'text-anchor':'middle'},y?y+' yr':'genesis')});
+  el('line',{x1:L,x2:L+pw,y1:Y(0),y2:Y(0),stroke:'var(--line-strong)','stroke-width':1});
+  el('line',{x1:L,x2:L+pw,y1:Y(21e6),y2:Y(21e6),stroke:'var(--brass)','stroke-width':1,'stroke-dasharray':'3 5',opacity:.7});
+  el('text',{x:L+8,y:Y(21e6)-7,'class':'lab'},'21,000,000 cap');
+  function path(arr){return arr.map(function(v,i){return (i?'L':'M')+X(i).toFixed(1)+' '+Y(v).toFixed(1)}).join(' ')}
+  var pb=el('path',{d:path(btc),fill:'none',stroke:'var(--chart-bitcoin)','stroke-width':2,'stroke-linejoin':'round'});
+  var pk=el('path',{d:path(kairos),fill:'none',stroke:'var(--chart-kairos)','stroke-width':2.2,'stroke-linejoin':'round'});
+  var ek=el('circle',{cx:X(40),cy:Y(kairos[40]),r:4,fill:'var(--chart-kairos)',stroke:'var(--surface)','stroke-width':2});
+  var eb=el('circle',{cx:X(40),cy:Y(btc[40]),r:4,fill:'var(--chart-bitcoin)',stroke:'var(--surface)','stroke-width':2});
+  el('text',{x:X(40)+10,y:Y(kairos[40])-2,'class':'lab'},'Kairos '+(kairos[40]/1e6).toFixed(1)+'M');
+  el('text',{x:X(40)+10,y:Y(btc[40])+14,'class':'lab'},'Bitcoin '+(btc[40]/1e6).toFixed(1)+'M');
+  if(!matchMedia('(prefers-reduced-motion: reduce)').matches){[pk,pb].forEach(function(p){var len=p.getTotalLength();p.style.strokeDasharray=len;p.style.strokeDashoffset=len;p.style.transition='stroke-dashoffset 1.4s cubic-bezier(.4,0,.2,1) .2s';requestAnimationFrame(function(){requestAnimationFrame(function(){p.style.strokeDashoffset=0})})})}
+  // hover crosshair
+  var cross=el('line',{x1:0,x2:0,y1:T,y2:T+ph,stroke:'var(--line-strong)','stroke-width':1,opacity:0});
+  var dk=el('circle',{r:4.5,fill:'var(--chart-kairos)',stroke:'var(--surface)','stroke-width':2,opacity:0});
+  var db=el('circle',{r:4.5,fill:'var(--chart-bitcoin)',stroke:'var(--surface)','stroke-width':2,opacity:0});
+  var hit=el('rect',{x:L,y:T,width:pw,height:ph,fill:'transparent'});
+  var tip=document.getElementById('tip'), wrap=document.getElementById('chartwrap');
+  function fmt(n){return Math.round(n).toLocaleString('en-US')}
+  function move(ev){var r=svg.getBoundingClientRect(); var px=(ev.clientX-r.left)*W/r.width; var y=Math.max(0,Math.min(YEARS,Math.round((px-L)/pw*YEARS)));
+    cross.setAttribute('x1',X(y));cross.setAttribute('x2',X(y));cross.setAttribute('opacity',1);
+    dk.setAttribute('cx',X(y));dk.setAttribute('cy',Y(kairos[y]));dk.setAttribute('opacity',1);
+    db.setAttribute('cx',X(y));db.setAttribute('cy',Y(btc[y]));db.setAttribute('opacity',1);
+    tip.innerHTML='<b>year '+y+'</b><br>Kairos&nbsp; '+fmt(kairos[y])+' KRS<br>Bitcoin '+fmt(btc[y])+' BTC';
+    var wr=wrap.getBoundingClientRect(); tip.style.left=(X(y)*r.width/W)+'px'; tip.style.top=(Y(Math.max(kairos[y],btc[y]))*r.height/H)+'px'; tip.style.opacity=1;}
+  function leave(){cross.setAttribute('opacity',0);dk.setAttribute('opacity',0);db.setAttribute('opacity',0);tip.style.opacity=0}
+  hit.addEventListener('mousemove',move);hit.addEventListener('touchmove',function(e){move(e.touches[0])},{passive:true});hit.addEventListener('mouseleave',leave);hit.addEventListener('touchend',leave);
+  var tb=document.querySelector('#tbl tbody');[1,2,4,8,16,22,32,40].forEach(function(y){var tr=document.createElement('tr');tr.innerHTML='<td>'+y+'</td><td>'+fmt(kairos[y])+'</td><td>'+fmt(btc[y])+'</td>';tb.appendChild(tr)});
+
+  // ---- copy commands ----
+  var btn=document.getElementById('copybtn');
+  var cmds=['git clone https://github.com/Nimsalcade/kairos.git && cd kairos','python3 -m venv .venv && .venv/bin/pip install coincurve','.venv/bin/python -m kairos --testnet node --mine'].join('\n');
+  btn.addEventListener('click',function(){
+    function done(ok){btn.textContent=ok?'Copied':'Select & copy';setTimeout(function(){btn.textContent='Copy'},1800)}
+    try{navigator.clipboard.writeText(cmds).then(function(){done(true)},function(){fallback()})}catch(e){fallback()}
+    function fallback(){try{var rng=document.createRange();rng.selectNodeContents(document.getElementById('term'));var s=getSelection();s.removeAllRanges();s.addRange(rng)}catch(e){}done(false)}
+  });
+
+  // ---- rail highlight ----
+  var links=[].slice.call(document.querySelectorAll('#railnav a'));
+  if('IntersectionObserver' in window && links.length){
+    var map={};links.forEach(function(a){map[a.getAttribute('href').slice(1)]=a});
+    var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){links.forEach(function(a){a.classList.remove('on')});var a=map[e.target.id];if(a)a.classList.add('on')}})},{rootMargin:'-35% 0px -55% 0px'});
+    document.querySelectorAll('main section').forEach(function(s){io.observe(s)});
+  }
+})();
+</script>
+</body>
+</html>
