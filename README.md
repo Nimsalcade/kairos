@@ -4,7 +4,7 @@
 
 Kairos keeps what Bitcoin got right (SHA-256d proof-of-work, UTXOs, the chain
 with the most work wins) and redesigns what seventeen years of operation have
-exposed. Read the [whitepaper](docs/kairos-whitepaper.pdf).
+exposed. Read the [whitepaper](docs/kairos-whitepaper.md).
 
 > [!WARNING]
 > **Kairos is an experimental, unaudited public testnet.** Testnet coins have
@@ -146,7 +146,7 @@ with both signature backends, libsecp256k1 and the pure-Python reference
 | `kairos/wallet.py` | Encrypted deterministic wallet with address rotation and rescan |
 | `kairos/node.py`, `addrman.py` | Peer-to-peer network, headers-first sync, discovery, DoS protection |
 | `kairos/rpc.py` | JSON-RPC server and client |
-| `docs/` | Whitepaper |
+| `docs/` | Whitepaper (revision 4, for 0.4.0; revision 3 kept as PDF for the record) |
 | `deploy/` | Server setup script |
 
 ## Get involved

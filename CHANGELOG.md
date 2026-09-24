@@ -7,8 +7,9 @@ block header, so it is a new chain ("testnet 2") with its own chain id, magic
 and genesis. Testnet coins never had value; wallets keep working (same seed,
 same addresses) with a zero balance. Data directories from 0.3 are ignored
 (`blocks-v2.dat` is left untouched; the new files are `blocks-v3.dat`,
-`chainstate.dat`, `headers.dat`). The whitepaper PDF still describes the
-124-byte 0.3 header; the code is authoritative until it is revised.
+`chainstate.dat`, `headers.dat`). The whitepaper is revised (revision 4,
+`docs/kairos-whitepaper.md`) to describe these rules; revision 3 is kept as
+`docs/kairos-whitepaper-r3-0.3.0.pdf`.
 
 Consensus (hard fork)
 - The signature hash commits to the value and address of every coin being
