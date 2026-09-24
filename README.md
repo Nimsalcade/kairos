@@ -60,6 +60,11 @@ down the backup code it prints (`krsseed1...`). Your node finds the network by
 itself through the built-in seed nodes. Leave out `--mine` if you only want to
 run a node.
 
+The seed nodes only relay; every block is mined by testers. If nobody is
+mining for a while, difficulty drifts down (ASERT), so the next miner to start
+will find a burst of quick blocks until the schedule catches up. That is
+expected and consensus-safe, not a bug.
+
 **3. Use it.** Type commands at the `>` prompt:
 
 | Command | What it does |
