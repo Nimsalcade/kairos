@@ -171,9 +171,12 @@ Bitcoin's 2009 minimum difficulty, so the earliest coins cost real work rather
 than being claimable in a burst.
 
 Because the schedule is absolute, a chain that has run ahead of it (as a young
-test network with few miners does) keeps that lead when mining pauses, and the
-target eases at the same half-life. The first block after a pause is mined at
-the target its parent implies; the easing applies from the second block on.
+test network with few miners does) carries that lead as a higher target, and a
+pause eats into the lead because the schedule keeps moving while the chain does
+not. That is exactly what eases the target: a factor of two per two days of
+drift, so about 12% after an eight-hour pause. The first block after a pause is
+mined at the target its parent implies; the easing applies from the second
+block on.
 
 ## 5. Network
 
@@ -216,23 +219,24 @@ per hour, the same hourly issuance as Bitcoin in 2009. Half of the main curve
 is issued after about 5.5 years. There are no sudden drops in miner revenue, so
 there is no scheduled moment when a large share of hash power becomes
 unprofitable at once. After about 22.5 years the curve reaches the floor and
-the chain pays 0.6 KRS per block forever: 157,680 KRS per year, about 0.8% of
+the chain pays 0.6 KRS per block forever: about 157,800 KRS per year, 0.8% of
 supply at that point and a shrinking fraction thereafter.
 
 | Years since genesis | Kairos, cumulative KRS | Bitcoin, cumulative BTC |
 |---:|---:|---:|
-| 1 | 2,473,000 | 2,628,000 |
-| 2 | 4,655,000 | 5,256,000 |
-| 4 | 8,279,000 | 10,512,000 |
-| 8 | 13,294,000 | 15,768,000 |
-| 16 | 18,172,000 | 19,710,000 |
-| 22 | 19,667,000 | 20,531,000 |
-| 32 | 21,246,000 | 20,942,000 |
-| 40 | 22,507,000 | 21,003,000 |
+| 1 | 2,475,000 | 2,630,000 |
+| 2 | 4,658,000 | 5,260,000 |
+| 4 | 8,283,000 | 10,510,000 |
+| 8 | 13,299,000 | 15,760,000 |
+| 16 | 18,176,000 | 19,692,000 |
+| 22 | 19,669,000 | 20,511,000 |
+| 32 | 21,249,000 | 20,919,000 |
+| 40 | 22,511,000 | 20,980,000 |
 
 *Table 1. Gross issuance at two-minute and ten-minute blocks respectively,
-before Kairos's fee burn. The Kairos curve passes 21 million around year 31
-and then grows by the tail alone.*
+computed block by block from the consensus rules with 365.25-day years, before
+Kairos's fee burn. The Kairos curve passes 21 million around year 30 and then
+grows by the tail alone.*
 
 **Why a tail.** A proof-of-work chain is only as secure as what it pays for
 work. If that payment must eventually come entirely from fees, security becomes
