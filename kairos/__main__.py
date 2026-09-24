@@ -192,7 +192,7 @@ def run_command(line, chain, wallet, node):
                 raise ValueError("usage: send <addr> <KRS>")
             to = wallet.decode(rest[0])
             try:
-                tx = wallet.create_tx(chain, to, int(round(float(rest[1]) * COIN)))
+                txs = wallet.create_txs(chain, to, int(round(float(rest[1]) * COIN)))
             except ValueError as e:
                 if "insufficient" not in str(e):
                     raise
@@ -205,9 +205,15 @@ def run_command(line, chain, wallet, node):
                             f"before they can be spent.")
                 raise ValueError(f"insufficient funds: spendable {fmt(b['spendable'])}, "
                                  f"immature {fmt(b['immature'])}.{hint}")
-            node.submit_tx(tx)
+            for tx in txs:
+                node.submit_tx(tx)
             note = "  (note: that address belongs to this same wallet)" if to in wallet.by_addr else ""
-            print(f"sent {tx.txid.hex()}{note}\n  it confirms when a block is mined")
+            pq = "  (post-quantum: Lamport signatures)" if chain.pq_active(chain.tip) else ""
+            if len(txs) == 1:
+                print(f"sent {txs[0].txid.hex()}{note}{pq}\n  it confirms when a block is mined")
+            else:
+                print(f"sent as {len(txs)} transactions{note}{pq}:\n  " + "\n  ".join(t.txid.hex() for t in txs)
+                      + "\n  they confirm when blocks are mined")
         elif cmd == "mine":
             for _ in range(int(rest[0]) if rest else 1):
                 node.mine_one()

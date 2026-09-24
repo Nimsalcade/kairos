@@ -73,4 +73,11 @@ bounty yet. Reporters are credited in the changelog unless they prefer not to be
 - **Wallet:** decrypted seed is held in memory while the node runs; no
   hardware-wallet or BIP32 interoperability; a Lamport key reused on two
   messages is broken (the wallet prevents this, consensus cannot).
+- **Post-quantum sweeps are bounded by transaction size.** A Lamport witness
+  is about 24.6 KB and a transaction may not exceed half a block, so at most
+  about 38 coins can be swept per transaction, and all coins at one address
+  must go in the same transaction. An address holding more coins than that
+  cannot be swept after the switch; the wallet refuses rather than reuse a
+  one-time key. Address rotation (0.4.0) keeps this from happening by
+  default; reused addresses should be consolidated beforehand.
 - **Clock:** nodes trust their local clock. Run NTP.

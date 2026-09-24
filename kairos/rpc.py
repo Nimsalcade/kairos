@@ -316,17 +316,21 @@ class RPCServer:
                 for op, c in w.coins(self.chain).items()]
 
     def rpc_sendtoaddress(self, addr, amount):
+        """Returns the txid. Once the quantum switch is active the wallet signs
+        with Lamport keys automatically; a large payment may then need several
+        transactions, in which case a list of txids is returned."""
         w = self._w()
         try:
             to = w.decode(addr)
         except ValueError:
             raise RPCError(-5, "invalid address")
         try:
-            tx = w.create_tx(self.chain, to, _amount(amount))
+            txs = w.create_txs(self.chain, to, _amount(amount))
         except ValueError as e:
             raise RPCError(-6, str(e))
-        self.node.submit_tx(tx)
-        return tx.txid.hex()
+        for tx in txs:
+            self.node.submit_tx(tx)
+        return txs[0].txid.hex() if len(txs) == 1 else [t.txid.hex() for t in txs]
 
     # ------------------------------------------------------------ merge mining
     def rpc_createauxblock(self, address):
