@@ -151,6 +151,7 @@ with both signature backends, libsecp256k1 and the pure-Python reference
 
 ## Get involved
 
+- **Website:** [nimsalcade.github.io/kairos](https://nimsalcade.github.io/kairos/) (source in `docs/index.html`).
 - **Announcement and discussion:** [Bitcointalk thread](https://bitcointalk.org/index.php?topic=5594931.0), posted by the maintainer of this repository as CreatorofKairos.
 - **Found a bug?** [Open an issue](../../issues/new/choose) using the bug report form.
 - **Found a security problem?** Please **don't** open a public issue. See
