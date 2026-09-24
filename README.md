@@ -60,10 +60,18 @@ down the backup code it prints (`krsseed1...`). Your node finds the network by
 itself through the built-in seed nodes. Leave out `--mine` if you only want to
 run a node.
 
-The seed nodes only relay; every block is mined by testers. If nobody is
-mining for a while, difficulty drifts down (ASERT), so the next miner to start
-will find a burst of quick blocks until the schedule catches up. That is
-expected and consensus-safe, not a bug.
+The seed nodes only relay; blocks are mined by whoever runs `--mine`, which
+currently includes the maintainer's own computer. Two things about block timing
+are expected, not bugs:
+
+- **Fast blocks in the early days of testnet 2.** The chain started at a
+  deliberately easy difficulty, and difficulty rises gradually (ASERT, 48-hour
+  half-life), so blocks can arrive every few seconds until it catches up with
+  the miners' hash rate.
+- **Slightly faster blocks after an idle stretch.** If nobody mines for a
+  while, difficulty eases gently once mining resumes: about 12% after an
+  8-hour gap, about 1.4x after a day. The first block after a gap is mined at
+  the old difficulty.
 
 **3. Use it.** Type commands at the `>` prompt:
 
