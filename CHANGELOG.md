@@ -28,6 +28,10 @@ No consensus change.
   `run.py --external CMD` checks another implementation step by step. CI
   verifies the files are exactly what the generator produces and that seven
   injected consensus bugs are each caught.
+- `docs/production-node-plan.md`: Bitcoin Core fork against Rust from
+  scratch, a component-by-component map of Kairos rules onto Core code, an
+  effort estimate (35–53 person-months for the fork), risks, and three
+  consensus changes to make on testnet 3 before the port freezes the rules.
 - `docs/rehearsal-testnet2.md`: report skeleton for the quantum-switch
   rehearsal on testnet 2, with the timeline to lock-in at 4032 and the
   measurement sections to fill after activation at 6048.
