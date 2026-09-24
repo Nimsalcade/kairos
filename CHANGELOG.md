@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+No consensus change.
+
+- Fix: a node syncing from several peers logged the same "new tip" up to
+  once per peer. Peer threads compared the tip against the one they saw
+  before their own submit, so a thread also reported tips another thread had
+  produced. The node now reports each tip once. Logging only.
+- New RPC `getpqstats [start end coins share]`: for a block range (default
+  the last 2016), post-quantum transaction sizes, inputs per transaction,
+  block fill and bytes per Lamport input as observed on chain; and for each
+  coin count, how many transactions, blocks and days a sweep takes, computed
+  from exact serialized sizes. Example:
+  `kairos --testnet rpc getpqstats 6048 6300 '[1000, 1000000]'`.
+- `docs/rehearsal-testnet2.md`: report skeleton for the quantum-switch
+  rehearsal on testnet 2, with the timeline to lock-in at 4032 and the
+  measurement sections to fill after activation at 6048.
+
 ## 0.4.1 — post-quantum sends
 
 No consensus change: 0.4.1 runs on testnet 2 alongside 0.4.0 nodes.

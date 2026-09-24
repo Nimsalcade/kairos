@@ -165,6 +165,29 @@ class RPCServer:
         return {"hash": self.chain.tip.hash.hex(), "height": self.chain.height,
                 "deployments": self.chain.deployment_info(self.chain.tip)}
 
+    def rpc_getpqstats(self, start=None, end=None, coins=None, share=1.0):
+        """Post-quantum usage in blocks start..end (default: the last 2016) and how
+        long sweeping each count in `coins` would take with `share` of every block."""
+        from .pqstats import measure, sweep_plan
+        end = self.chain.height if end is None else end
+        start = max(0, end - 2015) if start is None else start
+        for v in (start, end):
+            if not isinstance(v, int) or isinstance(v, bool):
+                raise RPCError(-8, "heights must be integers")
+        if coins is None:
+            coins = [100, 10_000, 1_000_000, 100_000_000]
+        elif isinstance(coins, int) and not isinstance(coins, bool):
+            coins = [coins]
+        if (not isinstance(coins, list) or not coins or len(coins) > 16
+                or not all(isinstance(c, int) and not isinstance(c, bool) and 0 < c <= 10 ** 12 for c in coins)):
+            raise RPCError(-8, "coins must be a positive integer or a list of up to 16")
+        if not isinstance(share, (int, float)) or isinstance(share, bool) or not 0 < share <= 1:
+            raise RPCError(-8, "share must be in (0, 1]")
+        out = measure(self.chain, start, end)
+        fee = self.chain.tip.next_base_fee
+        out["sweep"] = [sweep_plan(self.chain.params, c, float(share), base_fee=fee) for c in coins]
+        return out
+
     def rpc_setsignal(self, name, enable=True):
         if self.chain.deployment(str(name)) is None:
             raise RPCError(-8, "unknown deployment")

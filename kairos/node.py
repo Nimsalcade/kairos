@@ -222,6 +222,8 @@ class Node:
         self.queue = []               # blocks still to fetch on the best header chain, oldest first
         self.queue_for = None         # the best header the queue was computed for
         self.qlock = threading.Lock()
+        self._tiplog_lock = threading.Lock()
+        self._logged_tip = chain.tip  # last tip reported, so each new tip is logged once
         path = os.path.join(chain.datadir, "peers.json") if chain.datadir else None
         self.addrman = AddrMan(path, allow_private=chain.params.name == "regtest")
         threading.Thread(target=self._accept_loop, daemon=True).start()
@@ -467,7 +469,6 @@ class Node:
                 if self.inflight.get(blk.hash, (None,))[0] is peer:
                     del self.inflight[blk.hash]
                 peer.inflight.discard(blk.hash)
-            before = self.chain.tip
             status = self.chain.submit_block(blk)
             if status in ("accepted", "stored"):
                 # Accepting one block can also connect waiting orphans behind it,
@@ -475,9 +476,7 @@ class Node:
                 # Don't re-announce every block of a download burst (that looks like a flood
                 # to our other peers). Announce the tip, at most twice a second; the final
                 # tip of a burst is always announced by the announcer thread.
-                if self.chain.tip is not before:
-                    self._tip_changed()
-                    self.log(f"[{self.name}] new tip {self.chain.height} {self.chain.tip.hash.hex()[:16]}")
+                self._note_tip()
                 peer.height = max(peer.height, blk.header.height)
                 self._fetch_blocks()
             elif status == "orphan":
@@ -525,6 +524,21 @@ class Node:
         # without older nodes banning them.
 
     # ------------------------------------------------------------ tip announcements
+    def _note_tip(self, mined=False) -> bool:
+        """Report the current tip once. Several peer threads submit blocks at the same
+        time, so comparing against the tip seen before our own submit would also report
+        tips that another thread produced; comparing against the last reported tip
+        does not."""
+        with self._tiplog_lock:
+            tip = self.chain.tip
+            if tip is self._logged_tip:
+                return False
+            self._logged_tip = tip
+        self._tip_changed()
+        if not mined:
+            self.log(f"[{self.name}] new tip {tip.height} {tip.hash.hex()[:16]}")
+        return True
+
     def _tip_changed(self):
         now = time.time()
         if now - self._last_announce >= 0.5:
@@ -652,7 +666,8 @@ class Node:
         self.broadcast_inv(txs=[tx.txid.hex()])
 
     def announce_block(self, blk: Block):
-        self._tip_changed()
+        if not self._note_tip(mined=True):
+            self._tip_changed()
 
     def mine_one(self, address=None, extra=b"") -> Block:
         while self.running:
@@ -660,7 +675,7 @@ class Node:
             start_tip = self.chain.tip
             if mine(blk.header, should_stop=lambda: self.chain.tip is not start_tip or not self.running):
                 if self.chain.submit_block(blk) == "accepted":
-                    self.announce_block(blk)
+                    self._note_tip(mined=True)
                     self.log(f"[{self.name}] mined block {blk.header.height} {blk.hash.hex()[:16]} "
                              f"({len(blk.txs) - 1} txs)")
                     return blk
