@@ -2,12 +2,12 @@
 # Kairos testnet seed node setup for Ubuntu 24.04.
 # Run as root, passing the IPs of the OTHER seed nodes (or none to rely on discovery):
 #     bash setup-seed.sh [PEER_IP ...]
-# Expects /root/kairos-0.4.0.zip to be present (a zip of this repository whose
-# top-level folder is kairos-0.4.0), e.g. made with:
-#     git archive --prefix=kairos-0.4.0/ -o kairos-0.4.0.zip HEAD
+# Expects /root/kairos-0.4.1.zip to be present (a zip of this repository whose
+# top-level folder is kairos-0.4.1), e.g. made with:
+#     git archive --prefix=kairos-0.4.1/ -o kairos-0.4.1.zip HEAD
 set -euo pipefail
 
-VERSION=kairos-0.4.0
+VERSION=kairos-0.4.1
 ZIP=/root/$VERSION.zip
 APP=/opt/kairos
 PORT=19333
