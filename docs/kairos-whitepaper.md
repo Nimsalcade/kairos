@@ -64,19 +64,8 @@ output is spent. Schnorr signatures are 64 bytes, provably secure in the
 random-oracle model, and support key aggregation, so a multi-party output can
 be indistinguishable from a single-party one.
 
-```
-   Schnorr public key            Lamport public key
-   32 bytes, BIP340              16 KiB, hash-based
-          |                              |
-          |                    pq_root = H(Lamport key)
-          |                              |
-          +--------------+---------------+
-                         |
-              address = H(Schnorr key || pq_root)
+![A Kairos address commits to a classical and a post-quantum key](figures/fig1-address.svg)
 
-   today:      64-byte Schnorr signature
-   emergency:  Lamport signature (section 10)
-```
 *Figure 1. A Kairos address commits to a classical and a post-quantum key.*
 
 **Witnesses outside the identifier.** A transaction's identifier is the hash of
@@ -130,19 +119,11 @@ covered directly by proof-of-work. The UTXO root commits to the entire set of
 unspent outputs after the block, and the fee field commits to the base fee that
 applies to the next block (sections 6 and 7). Timestamps are 64-bit.
 
-```
-   version  u32   bits 0..7 = 1; bit 8 = merge-mined; bits 16..28 = signals
-   height   u32
-   prev     32    hash of the parent header
-   tx_root  32    Merkle root of witness-inclusive transaction hashes
-   utxo_root 32   MuHash of the UTXO set after this block
-   time     u64
-   bits     u32   compact target
-   fee      u64   base fee (motes per byte) for the next block
-   nonce    u64
-```
-*Figure 2. The 132-byte header. Each header commits to its parent, its
-transactions, and the complete state that results.*
+![Three consecutive 132-byte headers, each committing to its parent, its transactions, and the resulting state](figures/fig2-header-chain.svg)
+
+*Figure 2. The 132-byte header, fields in serialisation order with sizes in
+bytes. Each header commits to its parent, its transactions, and the complete
+state that results: the UTXO set and the next base fee.*
 
 The version field is structured. Its low byte must be 1. Bit 8 says the block's
 work is proven by a merge-mined parent. Bits 16 to 28 are reserved for
@@ -237,6 +218,12 @@ supply at that point and a shrinking fraction thereafter.
 computed block by block from the consensus rules with 365.25-day years, before
 Kairos's fee burn. The Kairos curve passes 21 million around year 30 and then
 grows by the tail alone.*
+
+![Cumulative supply and new coins per day for Kairos and Bitcoin](figures/fig3-issuance.svg)
+
+*Figure 3. Gross issuance of Kairos compared with Bitcoin. Left: cumulative
+supply. Right: coins created per day, log scale; the Kairos floor is 432 coins
+per day. Generated from the consensus code by `figures/make_figures.py`.*
 
 **Why a tail.** A proof-of-work chain is only as secure as what it pays for
 work. If that payment must eventually come entirely from fees, security becomes
