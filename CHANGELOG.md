@@ -20,6 +20,14 @@ No consensus change.
   checked against FIPS 204/205 tables). Recommends commit-delay-reveal as the
   rule the quantum switch enables, SLH-DSA-SHA2-128s as the fallback key, and
   versioned outputs, all for testnet 3.
+- Consensus conformance vectors in `tests/vectors/`: 180 block-by-block
+  steps over 7 chains (every reachable rejection reason, reorg, orphan,
+  malformed data, ASERT, base fee, version-bits states, the quantum switch by
+  signalling and by flag day, merge-mining, checkpoints) and 228 function
+  cases (sighash, witnesses, MuHash, ASERT, base fee, auxpow and more).
+  `run.py --external CMD` checks another implementation step by step. CI
+  verifies the files are exactly what the generator produces and that seven
+  injected consensus bugs are each caught.
 - `docs/rehearsal-testnet2.md`: report skeleton for the quantum-switch
   rehearsal on testnet 2, with the timeline to lock-in at 4032 and the
   measurement sections to fill after activation at 6048.
