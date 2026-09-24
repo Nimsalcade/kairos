@@ -8,6 +8,18 @@ No consensus change.
   once per peer. Peer threads compared the tip against the one they saw
   before their own submit, so a thread also reported tips another thread had
   produced. The node now reports each tip once. Logging only.
+- MuSig2 (BIP327) in `kairos/musig.py`: key aggregation, tweaks, nonce
+  generation and aggregation, partial signing and verification, signature
+  aggregation, deterministic signing. It passes every official BIP327 test
+  vector. A MuSig2 output is an ordinary Kairos address whose Schnorr key is
+  the aggregate key, spent with one 64-byte signature; a test pays and spends
+  a 3-of-3 output on chain. No consensus change. Hash-based keys cannot be
+  aggregated, so a MuSig2 address must name its post-quantum root
+  explicitly: an unspendable root, which freezes the coins if the quantum
+  switch activates, or one party's Lamport root, which lets that party alone
+  move them after activation. The commit-delay-reveal rule proposed for
+  testnet 3 removes this trade-off. A secret nonce is wiped when it signs,
+  so it can never sign twice.
 - HD wallets: new wallets derive keys by BIP32 from BIP39 words at
   `m/44'/coin'/0'/0/i` (coin 19282' on mainnet, pending SLIP-44
   registration; 1' on test networks). A hardware wallet holding the same
