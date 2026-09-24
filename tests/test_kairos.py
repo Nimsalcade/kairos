@@ -381,7 +381,7 @@ class TestQuantumEmergency(unittest.TestCase):
         chain.signal.add("pq")
         while not chain.pq_active(chain.tip):
             mine_block(chain, clock, alice._derive().address)
-        ec_tx = alice.create_tx(chain, bob.mining_address, COIN)
+        ec_tx = alice.create_tx(chain, bob.mining_address, COIN, post_quantum=False)
         with self.assertRaisesRegex(ValidationError, "signature"):
             chain.accept_tx(ec_tx)
         pq_tx = alice.create_tx(chain, bob.mining_address, COIN, post_quantum=True)

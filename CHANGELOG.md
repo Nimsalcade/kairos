@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- Fix: after the quantum switch activates, the console `send` and RPC
+  `sendtoaddress` signed with Schnorr and every payment was rejected as
+  "invalid signature". The wallet now takes the Lamport path by itself once
+  `pq` is active (`post_quantum` remains as an explicit override).
+- A post-quantum payment that needs more inputs than fit in one transaction
+  (about 38 at 24.6 KB per Lamport witness, under a 950 KB wallet cap) is
+  split into several transactions; every coin at an address stays in the same
+  transaction so a one-time key never signs twice. `sendtoaddress` returns a
+  list of txids in that case; the console prints them all.
+- An address holding more coins than fit in one transaction cannot be swept
+  safely after activation; the wallet refuses with a clear message. Since
+  0.4.0 every reward and change output gets a fresh address, so this only
+  affects addresses that were reused on purpose. Consolidate such coins with
+  ordinary Schnorr spends while the switch is inactive.
+- Change below 1,000 motes is left to the miner instead of creating dust.
+- Tests: 82 (4 new): automatic Lamport mode, split sweeps under the cap, the
+  refusal, and the console and RPC send paths after activation on regtest.
+
 ## 0.4.0 — testnet 2: consensus v2, headers-first, fast sync
 
 **The public testnet was reset.** 0.4.0 changes the signature hash and the

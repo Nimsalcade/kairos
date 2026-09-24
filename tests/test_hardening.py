@@ -18,7 +18,7 @@ from kairos.chain import Chain, ValidationError
 from kairos.crypto import sha256d
 from kairos.node import Node
 from kairos.params import REGTEST, COIN, bits_to_target
-from kairos.tx import Transaction
+from kairos.tx import Transaction, WIT_LAMPORT, WIT_SCHNORR
 from kairos.wallet import Wallet
 
 from test_kairos import Clock, new_chain, mine_block, wait
@@ -952,3 +952,97 @@ class TestFastSync(unittest.TestCase):
                 src.stop()
                 dst_chain.close()
                 src.chain.close()
+
+
+class TestPostQuantumSpending(unittest.TestCase):
+    """After the quantum switch, ordinary sends keep working: the wallet takes
+    the Lamport path by itself, splits large payments under the transaction
+    size cap, and never lets a one-time key sign twice."""
+
+    def activated(self, n_blocks, seed=b"p" * 32):
+        chain, clock = new_chain()
+        w = Wallet(REGTEST, seed=seed)
+        w.attach(chain)                              # a fresh address for every reward
+        chain.signal.add("pq")
+        for _ in range(n_blocks):
+            mine_block(chain, clock, w.mining_address)
+        self.assertTrue(chain.pq_active(chain.tip))
+        return chain, clock, w
+
+    def test_send_takes_the_lamport_path_automatically(self):
+        chain, clock, w = self.activated(20)
+        bob = Wallet(REGTEST, seed=b"b" * 32)
+        with self.assertRaisesRegex(ValidationError, "signature"):
+            chain.accept_tx(w.create_tx(chain, bob.mining_address, COIN, post_quantum=False))
+        txs = w.create_txs(chain, bob.mining_address, COIN)          # no flag: wallet decides
+        self.assertEqual(len(txs), 1)
+        self.assertEqual(txs[0].inputs[0].witness[0], WIT_LAMPORT)
+        self.assertTrue(chain.accept_tx(txs[0]))
+        mine_block(chain, clock, w.mining_address)
+        self.assertEqual(bob.balance(chain)["spendable"], COIN)
+        # before activation the same call signs with Schnorr
+        pre, pclock = new_chain()
+        w2 = Wallet(REGTEST, seed=b"q" * 32)
+        for _ in range(3):
+            mine_block(pre, pclock, w2.mining_address)
+        self.assertEqual(w2.create_txs(pre, bob.mining_address, COIN)[0].inputs[0].witness[0], WIT_SCHNORR)
+
+    def test_large_payment_is_split_under_the_size_cap(self):
+        chain, clock, w = self.activated(48)                            # 46 mature coins, one per address
+        cap = w._pq_inputs_per_tx(0)
+        self.assertLess(cap, len(w.coins(chain)))
+        bob = Wallet(REGTEST, seed=b"b" * 32)
+        amount = w.balance(chain)["spendable"] - 5 * COIN
+        txs = w.create_txs(chain, bob.mining_address, amount)
+        self.assertGreater(len(txs), 1)
+        swept = set()
+        for tx in txs:
+            self.assertLessEqual(tx.size, Wallet.MAX_TX_BYTES)
+            self.assertLessEqual(tx.size, REGTEST.max_block_size // 2)
+            self.assertLessEqual(len(tx.inputs), cap)
+            addrs = {chain.utxos[i.prev].address for i in tx.inputs}
+            self.assertFalse(addrs & swept)                             # one-time keys: one tx each
+            swept |= addrs
+            self.assertTrue(chain.accept_tx(tx))
+        paid = sum(o.value for tx in txs for o in tx.outputs if o.address == bob.mining_address)
+        self.assertEqual(paid, amount)
+        for _ in range(4):
+            if not chain.mempool:
+                break
+            mine_block(chain, clock, w.mining_address)
+        self.assertFalse(chain.mempool)
+        self.assertEqual(bob.balance(chain)["spendable"], amount)
+        self.assertTrue(all(self_idx in w.pq_revealed
+                            for self_idx, k in enumerate(w.keys) if k.address in swept))
+
+    def test_address_with_too_many_coins_is_refused(self):
+        chain, clock = new_chain()
+        w = Wallet(REGTEST, seed=b"r" * 32)                             # not attached: rewards pile up
+        chain.signal.add("pq")
+        addr = w.mining_address
+        for _ in range(w._pq_inputs_per_tx(0) + 3):
+            mine_block(chain, clock, addr)
+        self.assertTrue(chain.pq_active(chain.tip))
+        with self.assertRaisesRegex(ValueError, "cannot be swept safely"):
+            w.create_txs(chain, Wallet(REGTEST, seed=b"b" * 32).mining_address, COIN)
+
+    def test_console_and_rpc_send_after_activation(self):
+        from kairos.rpc import RPCServer, call
+        from kairos.__main__ import run_command
+        with tempfile.TemporaryDirectory() as d:
+            chain, clock, w = self.activated(20)
+            bob = Wallet(REGTEST, seed=b"b" * 32)
+            node = Node(chain, wallet=w)
+            rpc = RPCServer(node, d)
+            try:
+                run_command(["send", w.encode(bob.mining_address), "1.5"], chain, w, node)
+                self.assertEqual(len(chain.mempool), 1)
+                self.assertEqual(next(iter(chain.mempool.values())).inputs[0].witness[0], WIT_LAMPORT)
+                r = call(d, rpc.port, "sendtoaddress", [w.encode(bob.mining_address), 2.0])
+                self.assertIsNone(r["error"])
+                self.assertIn(r["result"], [t.hex() for t in chain.mempool])
+                node.mine_one()
+                self.assertEqual(bob.balance(chain)["spendable"], int(3.5 * COIN))
+            finally:
+                rpc.stop()
+                node.stop()

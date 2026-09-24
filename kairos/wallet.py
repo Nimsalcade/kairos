@@ -270,53 +270,121 @@ class Wallet:
         return {"spendable": spendable, "immature": total - spendable}
 
     # ------------------------------------------------------ spending
+    # A transaction may not exceed half the block size (consensus). A Lamport
+    # witness is about 24.6 KB, so a post-quantum payment that needs many
+    # inputs is split into several transactions, each under this wallet cap.
+    MAX_TX_BYTES = 950_000
+    DUST = 1_000                  # change smaller than this is left to the miner
+
     def create_tx(self, chain, to: bytes, amount: int, tip_per_byte: int = 1,
-                  expiry_blocks: int = 0, post_quantum: bool = False) -> Transaction:
+                  expiry_blocks: int = 0, post_quantum: Optional[bool] = None) -> Transaction:
+        """One transaction paying `amount` to `to`. Raises if the payment cannot
+        fit in a single transaction (see create_txs)."""
+        txs = self.create_txs(chain, to, amount, tip_per_byte, expiry_blocks, post_quantum)
+        if len(txs) != 1:
+            raise ValueError(f"payment needs {len(txs)} transactions; use create_txs")
+        return txs[0]
+
+    def create_txs(self, chain, to: bytes, amount: int, tip_per_byte: int = 1,
+                   expiry_blocks: int = 0, post_quantum: Optional[bool] = None) -> List[Transaction]:
+        """Transactions paying `amount` to `to` in total. Uses the Lamport path
+        automatically once the quantum switch is active on `chain`, unless
+        `post_quantum` says otherwise. Schnorr payments are always one
+        transaction; Lamport payments may be several."""
         if amount <= 0:
             raise ValueError("amount must be positive")
+        pq = chain.pq_active(chain.tip) if post_quantum is None else post_quantum
         coins = {op: c for op, c in self.coins(chain).items() if op not in chain.mempool_spends}
         base_fee = chain.tip.next_base_fee
-        ordered = sorted(coins.items(), key=lambda kv: -kv[1].value)
-        selected = []
-        for op, c in ordered:
-            selected.append((op, c))
-            if post_quantum:
-                # A Lamport key may sign only one message ever, so an emergency
-                # spend must sweep EVERY coin at each address it touches.
-                addrs = {x[1].address for x in selected}
-                selected = [(o, cc) for o, cc in ordered if cc.address in addrs]
-            total = sum(cc.value for _, cc in selected)
-            tx = self._build(chain, selected, to, amount, total, base_fee, tip_per_byte,
-                             expiry_blocks, post_quantum)
-            if tx is not None:
-                return tx
-        raise ValueError("insufficient funds")
+        if not pq:
+            ordered = sorted(coins.items(), key=lambda kv: -kv[1].value)
+            selected = []
+            for op, c in ordered:
+                selected.append((op, c))
+                total = sum(cc.value for _, cc in selected)
+                tx = self._build(chain, selected, to, amount, total, base_fee, tip_per_byte, expiry_blocks, False)
+                if tx is not None:
+                    return [tx]
+            raise ValueError("insufficient funds")
+        # Post-quantum: a Lamport key signs exactly one message, so every coin at an
+        # address must be swept in the same transaction. Group by address, fill
+        # transactions up to the size cap, stop once the groups cover the amount.
+        groups: Dict[bytes, list] = {}
+        for op, c in coins.items():
+            groups.setdefault(c.address, []).append((op, c))
+        ordered = sorted(groups.values(), key=lambda g: -sum(c.value for _, c in g))
+        cap = self._pq_inputs_per_tx(expiry_blocks)
+        plan, cur = [], []
+        for g in ordered:
+            if len(g) > cap:
+                raise ValueError(f"address {self.encode(g[0][1].address)} holds {len(g)} coins, more "
+                                 f"than fit in one post-quantum transaction ({cap}); they cannot be "
+                                 f"swept safely (a Lamport key may sign only once)")
+            if cur and len(cur) + len(g) > cap:
+                plan.append(cur)
+                cur = []
+            cur.extend(g)
+            if self._pq_net(plan + [cur], base_fee, tip_per_byte, expiry_blocks) >= amount:
+                plan.append(cur)
+                break
+        else:
+            raise ValueError("insufficient funds")
+        txs, left = [], amount
+        for i, sel in enumerate(plan):
+            total = sum(c.value for _, c in sel)
+            if i < len(plan) - 1:
+                net = total - (base_fee + tip_per_byte) * self._size(sel, 1, expiry_blocks, True)
+                pay = min(net, left)
+            else:
+                pay = left
+            tx = self._build(chain, sel, to, pay, total, base_fee, tip_per_byte, expiry_blocks, True)
+            if tx is None:
+                raise ValueError("insufficient funds")
+            txs.append(tx)
+            left -= pay
+        assert left == 0
+        return txs
+
+    def _size(self, selected, n_outputs: int, expiry_blocks: int, pq: bool) -> int:
+        wit_len = (1 + 32 + LAMPORT_PUB_LEN + LAMPORT_SIG_LEN) if pq else (1 + 32 + 32 + 64)
+        return Transaction([TxIn(op, b"\x00" * wit_len) for op, _ in selected],
+                           [TxOut(1, b"\x00" * 32)] * n_outputs, 1 if expiry_blocks else 0).size
+
+    def _pq_inputs_per_tx(self, expiry_blocks: int) -> int:
+        one = self._size([(OutPoint(b"\x00" * 32, 0), None)], 2, expiry_blocks, True)
+        two = self._size([(OutPoint(b"\x00" * 32, 0), None), (OutPoint(b"\x00" * 32, 1), None)], 2, expiry_blocks, True)
+        return max(1, (self.MAX_TX_BYTES - one) // (two - one) + 1)
+
+    def _pq_net(self, plan, base_fee, tip, expiry_blocks) -> int:
+        """What a set of planned sweeps can pay out after fees (two outputs each,
+        the conservative case)."""
+        rate = base_fee + tip
+        return sum(sum(c.value for _, c in sel) - rate * self._size(sel, 2, expiry_blocks, True) for sel in plan)
 
     def _build(self, chain, selected, to, amount, total, base_fee, tip, expiry_blocks, pq):
+        """A signed transaction spending exactly `selected`, or None if they do not
+        cover `amount` plus fees. Change below DUST is left to the miner."""
         exp = chain.height + expiry_blocks if expiry_blocks else 0
-        # Witness sizes are fixed, so size the tx with placeholders and sign
-        # exactly once. (A Lamport key must never sign two different messages.)
-        wit_len = (1 + 32 + LAMPORT_PUB_LEN + LAMPORT_SIG_LEN) if pq else (1 + 32 + 32 + 64)
-        change_key = None
-        fee = 0
-        for _ in range(4):   # fee depends on size, size depends on change output
-            change = total - amount - fee
-            if change < 0:
-                return None
-            outs = [TxOut(amount, to)]
-            if change > 0:
-                if change_key is None:
-                    change_key = self.keys[self._unused_index()]   # fresh, never-revealed key
-                    self.used.add(self.keys.index(change_key))     # reserve it now
-                    self.save()
+        rate = base_fee + tip
+        # Witness sizes are fixed, so the fee follows from the input and output
+        # counts alone and the transaction is signed exactly once. (A Lamport key
+        # must never sign two different messages.)
+        fee_one = rate * self._size(selected, 1, expiry_blocks, pq)
+        excess = total - amount - fee_one
+        if excess < 0:
+            return None
+        outs = [TxOut(amount, to)]
+        if excess >= self.DUST:
+            change = total - amount - rate * self._size(selected, 2, expiry_blocks, pq)
+            if change >= self.DUST:
+                change_key = self.keys[self._unused_index()]     # fresh, never-revealed key
+                self.used.add(self.keys.index(change_key))       # reserve it now
+                self.save()
                 outs.append(TxOut(change, change_key.address))
-            tx = Transaction([TxIn(op, b"\x00" * wit_len) for op, _ in selected], outs, exp)
-            need = (base_fee + tip) * tx.size
-            if fee >= need:
-                self._sign(tx, selected, pq)
-                return tx
-            fee = need
-        return None
+        wit_len = (1 + 32 + LAMPORT_PUB_LEN + LAMPORT_SIG_LEN) if pq else (1 + 32 + 32 + 64)
+        tx = Transaction([TxIn(op, b"\x00" * wit_len) for op, _ in selected], outs, exp)
+        self._sign(tx, selected, pq)
+        return tx
 
     def _sign(self, tx: Transaction, selected, pq: bool):
         if self.params.name == "main" and not _crypto.HARDENED:
