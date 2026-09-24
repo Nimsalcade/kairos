@@ -392,11 +392,11 @@ class Node:
             peer.ready = True
             if peer.outbound and peer.addr_key:
                 h, p = parse(peer.addr_key)
-                self.addrman.add(h, p, manual=True)     # we reached it, so it is real
-                self.addrman.success(peer.addr_key)
+                self.addrman.add(h, p, verified=True)   # we reached it, so it is real
+                self.addrman.success(peer.addr_key)     # ...and it moves to the TRIED table
                 self.log(f"[{self.name}] connected to {peer.addr_key}")
             elif peer.listen_port:
-                self.addrman.add(peer.addr[0], peer.listen_port)
+                self.addrman.add(peer.addr[0], peer.listen_port, source=peer.addr[0])
             if peer.outbound:
                 peer.send({"type": "getaddr"})
             if peer.height > self.chain.best_header.height:
@@ -517,7 +517,7 @@ class Node:
                     seen = _int(item[1])
                 except (ValueError, TypeError):
                     continue
-                self.addrman.add(host, port, seen=seen)
+                self.addrman.add(host, port, seen=seen, source=getattr(peer, "addr", (None,))[0])
         elif t in ("pong", "version"):
             pass
         # Unknown message types are ignored, so future versions can add messages
@@ -608,12 +608,18 @@ class Node:
                     h, p = parse(seed)
                     self.addrman.add(h, p)
             tries = 0
+            # at most one outbound connection per network group (/16): an attacker
+            # must then control addresses in as many groups as we have peers
+            with self.plock:
+                groups = {self.addrman.group(p.key) for p in self.peers if p.outbound and p.key}
+            groups |= {self.addrman.group(k) for k in self.pending}
             while outbound < self.max_outbound and tries < 3:
-                key = self.addrman.select(exclude=busy | self.manual)
+                key = self.addrman.select(exclude=busy | self.manual, exclude_groups=groups)
                 if key is None:
                     break
                 self._start_dial(key)
                 busy.add(key)
+                groups.add(self.addrman.group(key))
                 outbound += 1
                 tries += 1
             if time.time() - last_save > 60:

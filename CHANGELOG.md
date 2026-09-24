@@ -8,6 +8,15 @@ No consensus change.
   once per peer. Peer threads compared the tip against the one they saw
   before their own submit, so a thread also reported tips another thread had
   produced. The node now reports each tip once. Logging only.
+- Eclipse resistance: the address manager now follows Bitcoin Core's design.
+  NEW and TRIED tables are split into buckets placed by a keyed hash with a
+  secret per-node key. An address heard from a peer is placed by that peer's
+  /16 as well as its own, so one source reaches at most 16 of 256 NEW buckets:
+  in a test, 20,000 addresses flooded from one IP kept 490 slots and
+  displaced none of 285 honest ones. An address that worked in the last week
+  keeps its TRIED slot against newcomers. Outbound connections go to at most
+  one peer per /16. `peers.json` gains the key and table (0.4 files still
+  load). `getnetworkinfo` reports table sizes.
 - New RPC `getpqstats [start end coins share]`: for a block range (default
   the last 2016), post-quantum transaction sizes, inputs per transaction,
   block fill and bytes per Lamport input as observed on chain; and for each

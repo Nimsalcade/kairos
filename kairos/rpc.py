@@ -290,7 +290,7 @@ class RPCServer:
         return {"version": __version__, "subversion": AGENT, "protocolversion": PROTOCOL_VERSION,
                 "connections": len(self.node.peers), "port": self.node.port,
                 "banned": len([b for b in self.node.banned if self.node.is_banned(b)]),
-                "known_addresses": len(self.node.addrman)}
+                "known_addresses": len(self.node.addrman), "addrman": self.node.addrman.stats()}
 
     def rpc_getmininginfo(self):
         t = self.chain.tip
