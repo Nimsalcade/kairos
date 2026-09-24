@@ -198,7 +198,7 @@ class TestStorage(unittest.TestCase):
             for _ in range(5):
                 mine_block(c1, clock, w.mining_address)
             c1.close()
-            path = os.path.join(d, "blocks-v2.dat")
+            path = os.path.join(d, "blocks-v3.dat")
             good = os.path.getsize(path)
             with open(path, "ab") as f:
                 f.write(b"KRSB\x00\x10\x00\x00junk")        # power cut mid-write
@@ -326,7 +326,7 @@ class TestNetworkHardening(unittest.TestCase):
 
     def test_wrong_network_disconnected_not_banned(self):
         s = self.raw_peer()
-        self.send(s, {"magic": REGTEST.magic.hex(), "type": "version", "proto": 2,
+        self.send(s, {"magic": REGTEST.magic.hex(), "type": "version", "proto": 4,
                       "genesis": "00" * 32, "height": 0, "nonce": 1})
         wait(lambda: not self.node.peers, 5)
         self.assertFalse(self.node.is_banned("127.0.0.1"))
@@ -341,7 +341,7 @@ class TestNetworkHardening(unittest.TestCase):
         blk.header.tx_root = blk.compute_tx_root()
         mine(blk.header)
         s = self.raw_peer()
-        self.send(s, {"magic": REGTEST.magic.hex(), "type": "version", "proto": 2,
+        self.send(s, {"magic": REGTEST.magic.hex(), "type": "version", "proto": 4,
                       "genesis": self.chain.genesis.hash.hex(), "height": 0, "nonce": 99})
         self.send(s, {"magic": REGTEST.magic.hex(), "type": "block", "data": blk.serialize().hex()})
         wait(lambda: self.node.is_banned("127.0.0.1"), 5)
@@ -391,7 +391,7 @@ class TestHandshakeOrdering(unittest.TestCase):
                 node.mine_one()                  # a tip exists, so it will be announced
             for i in range(200):
                 s = socket.create_connection(("127.0.0.1", node.port), timeout=5)
-                s.sendall((json.dumps({"magic": REGTEST.magic.hex(), "type": "version", "proto": 2,
+                s.sendall((json.dumps({"magic": REGTEST.magic.hex(), "type": "version", "proto": 4,
                                        "genesis": chain.genesis.hash.hex(), "height": 0,
                                        "nonce": 5000 + i}) + "\n").encode())
                 first = json.loads(s.makefile().readline())
@@ -440,3 +440,154 @@ class TestRPC(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestPeerParsing(unittest.TestCase):
+    """Every failure while handling a message is the peer's fault and ends the
+    connection with a ban; nothing may escape the reader thread (0.3.0 leaked
+    RecursionError and OverflowError, leaving zombie connections)."""
+
+    def setUp(self):
+        self.chain = Chain(REGTEST)
+        self.node = Node(self.chain, wallet=Wallet(REGTEST, seed=b"n" * 32))
+        self.m = REGTEST.magic.hex()
+
+    def tearDown(self):
+        self.node.stop()
+
+    def raw(self, payload: bytes):
+        s = socket.create_connection(("127.0.0.1", self.node.port), timeout=5)
+        s.sendall(payload)
+        wait(lambda: self.node.is_banned("127.0.0.1"), 5)
+        wait(lambda: not any(p.alive for p in self.node.peers), 5)
+        s.close()
+        self.node.banned.clear()
+
+    def test_deep_nesting_is_banned_not_crashed(self):
+        self.raw(b"[" * 100_000 + b"]" * 100_000 + b"\n")
+
+    def test_infinite_height_is_banned(self):
+        v = {"type": "version", "magic": self.m, "genesis": self.chain.genesis.hash.hex(),
+             "proto": 4, "nonce": 1, "agent": "x", "port": 1}
+        line = json.dumps(v).replace('"proto": 4', '"proto": 4, "height": 1e999')
+        self.raw((line + "\n").encode())
+
+    def test_float_and_bool_numbers_rejected(self):
+        for bad in ('"proto": 4.0', '"proto": true', '"proto": -1', '"proto": 4, "height": -5'):
+            line = json.dumps({"type": "version", "magic": self.m, "genesis": self.chain.genesis.hash.hex(),
+                               "nonce": 1, "port": 1}).replace('"nonce": 1', bad + ', "nonce": 1')
+            self.raw((line + "\n").encode())
+
+
+class TestOrphanPool(unittest.TestCase):
+    def test_bounded_by_bytes_work_and_age(self):
+        import kairos.chain as C
+        # Regtest's schedule is already the easiest target there is, so use a
+        # 256x harder one (still ~4k hashes per block) to leave room below it.
+        chain, clock = new_chain(asert_anchor_bits=0x1F0FFFFF)
+        w = Wallet(REGTEST, seed=b"o" * 32)
+        # Orphans from a real fork are kept and connected once the parent arrives.
+        other, oclock = new_chain(asert_anchor_bits=0x1F0FFFFF)
+        b1 = mine_block(other, oclock, w.mining_address)
+        b2 = mine_block(other, oclock, w.mining_address)
+        self.assertEqual(chain.submit_block(b2), "orphan")
+        self.assertEqual(chain.orphan_bytes, b2.size)
+        self.assertEqual(chain.submit_block(b1), "accepted")
+        self.assertEqual(chain.height, 2)
+        self.assertEqual(chain.orphan_bytes, 0)
+        # Junk with a trivial self-chosen difficulty is not even stored.
+        junk = other.create_block(w.mining_address)
+        junk.header.prev_hash = b"\x77" * 32
+        junk.header.bits = 0x200FFFFF                       # 256x easier than the schedule
+        mine(junk.header)
+        self.assertEqual(chain.submit_block(junk), "orphan")
+        self.assertEqual(chain.orphan_bytes, 0)
+        # Legitimate-looking orphans are capped in total bytes: oldest evicted first.
+        saved = C.MAX_ORPHAN_BYTES
+        C.MAX_ORPHAN_BYTES = 3 * b2.size
+        try:
+            made = []
+            for i in range(5):
+                b = other.create_block(w.mining_address)
+                b.header.prev_hash = bytes([i + 1]) * 32
+                mine(b.header)
+                self.assertEqual(chain.submit_block(b), "orphan")
+                made.append(b)
+            self.assertLessEqual(chain.orphan_bytes, C.MAX_ORPHAN_BYTES)
+            self.assertNotIn(made[0].hash, chain.orphan_meta)
+            self.assertIn(made[-1].hash, chain.orphan_meta)
+        finally:
+            C.MAX_ORPHAN_BYTES = saved
+        # And they expire.
+        for h in list(chain.orphan_meta):
+            prev, size, added = chain.orphan_meta[h]
+            chain.orphan_meta[h] = (prev, size, added - C.ORPHAN_TTL - 1)
+        b = other.create_block(w.mining_address)
+        b.header.prev_hash = b"\x99" * 32
+        mine(b.header)
+        chain.submit_block(b)
+        self.assertEqual(set(chain.orphan_meta), {b.hash})
+
+
+class TestWalletHygiene(unittest.TestCase):
+    def test_lamport_reveal_is_persisted_before_signing(self):
+        """A crash between signing and saving must not allow a second Lamport signature."""
+        import kairos.wallet as W
+        with tempfile.TemporaryDirectory() as d:
+            chain, clock = new_chain(pq_emergency_height=1)
+            w = Wallet.load_or_create(REGTEST, os.path.join(d, "w.json"))
+            addr = w.mining_address
+            for _ in range(3):
+                mine_block(chain, clock, addr)
+            orig = W.lamport_sign
+
+            def crash(*a, **k):
+                raise KeyboardInterrupt("power cut while signing")
+            W.lamport_sign = crash
+            try:
+                with self.assertRaises(KeyboardInterrupt):
+                    w.create_tx(chain, addr, COIN, post_quantum=True)
+            finally:
+                W.lamport_sign = orig
+            reloaded = Wallet.load(REGTEST, os.path.join(d, "w.json"))
+            self.assertIn(0, reloaded.pq_revealed)              # on disk before any signature existed
+            with self.assertRaisesRegex(RuntimeError, "already used"):
+                reloaded.create_tx(chain, addr, COIN, post_quantum=True)
+
+    def test_mining_address_rotates_and_restore_finds_everything(self):
+        with tempfile.TemporaryDirectory() as d:
+            chain, clock = new_chain()
+            w = Wallet.load_or_create(REGTEST, os.path.join(d, "w.json"))
+            w.attach(chain)
+            first = w.mining_address
+            addrs = set()
+            for _ in range(30):                     # more blocks than the gap limit
+                addrs.add(w.mining_address)
+                mine_block(chain, clock, w.mining_address)
+            self.assertEqual(len(addrs), 30)         # a fresh address for every block
+            self.assertNotEqual(w.mining_address, first)
+            self.assertEqual(len(w.balance(chain)["immature"] and [1] or []), 1)
+            # Restore from the backup code alone, then rescan: all 30 coinbases are found.
+            r = Wallet.restore(REGTEST, w.backup_code(), os.path.join(d, "r.json"))
+            self.assertLess(len(r.keys), 30)
+            r.attach(chain)
+            self.assertEqual(r.balance(chain), w.balance(chain))
+            self.assertEqual(len(r.coins(chain, True)), 30)
+            # reload keeps the used-set, so no address is handed out twice
+            r2 = Wallet.load(REGTEST, os.path.join(d, "r.json"))
+            self.assertEqual(r2.used, r.used)
+            self.assertNotIn(r2.mining_address, addrs)
+
+    def test_encrypted_saves_do_not_rerun_kdf(self):
+        with tempfile.TemporaryDirectory() as d:
+            w = Wallet.load_or_create(REGTEST, os.path.join(d, "w.json"), "correct horse battery")
+            calls = []
+            orig = Wallet._kdf
+            Wallet._kdf = staticmethod(lambda *a: calls.append(1) or orig(*a))
+            try:
+                for _ in range(5):
+                    w.new_address()
+            finally:
+                Wallet._kdf = staticmethod(orig)
+            self.assertEqual(calls, [])
+            self.assertEqual(len(Wallet.load(REGTEST, os.path.join(d, "w.json"), "correct horse battery").keys), 6)

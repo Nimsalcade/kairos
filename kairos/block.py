@@ -5,6 +5,10 @@ Header (124 bytes):
     version u32 | height u32 | prev_hash 32 | tx_root 32 | utxo_root 32 |
     time u64 | bits u32 | nonce u64
 
+ * version: bits 0..7 must be 1; bit 8 = merge-mined (auxpow follows the
+   header); bits 16..28 = soft-fork signalling (params.Deployment). Other bits
+   are ignored by consensus so that future signals never split old nodes.
+
  * height is in the header: light clients know where they are without trust.
  * tx_root commits to wtxids, so witnesses are committed directly. Clean slate
    means no need for Bitcoin's witness-commitment-in-coinbase workaround.

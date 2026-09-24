@@ -248,11 +248,39 @@ class TestChain(unittest.TestCase):
             w = Wallet(params, seed=b"p" * 32)
             for _ in range(3):
                 mine_block(c1, clock, w.mining_address)
-            c1._store.close()
+            c1.close()
             c2 = Chain(params, datadir=d, now=clock)
-            c2._store.close()
+            c2.close()
             self.assertEqual(c2.tip.hash, c1.tip.hash)
             self.assertEqual(c2.utxos, c1.utxos)
+            # blocks are read back from disk, not held in memory
+            self.assertEqual(c2.blocks.mem, {})
+            self.assertEqual(c2.blocks[c2.tip.hash].hash, c1.tip.hash)
+
+    def test_sighash_commits_to_spent_amounts(self):
+        """A signer cannot be lied to about what it spends (BIP143's lesson)."""
+        self.fund_alice()
+        tx = self.alice.create_tx(self.chain, self.bob.mining_address, COIN)
+        coins = [self.chain.utxos[i.prev] for i in tx.inputs]
+        good = tx.sighash(REGTEST.chain_id, [(c.value, c.address) for c in coins])
+        lied = tx.sighash(REGTEST.chain_id, [(c.value + 1, c.address) for c in coins])
+        self.assertNotEqual(good, lied)
+        other = tx.sighash(REGTEST.chain_id, [(c.value, b"\x01" * 32) for c in coins])
+        self.assertNotEqual(good, other)
+        self.assertTrue(self.chain.accept_tx(tx))
+
+    def test_best_chain_is_tracked_incrementally(self):
+        self.fund_alice(5)
+        self.assertIs(self.chain.best, self.chain.tip)
+        # a shorter side branch never becomes best
+        side, sclock = new_chain()
+        for b in self.chain.blocks_after([self.chain.genesis.hash])[:2]:
+            side.submit_block(b)
+        sclock.t = self.clock.t
+        b = mine_block(side, sclock, self.carol.mining_address)
+        self.assertEqual(self.chain.submit_block(b), "accepted")
+        self.assertIs(self.chain.best, self.chain.tip)
+        self.assertEqual(self.chain.height, 5)
 
 
 class TestMainnetGenesis(unittest.TestCase):
@@ -263,29 +291,107 @@ class TestMainnetGenesis(unittest.TestCase):
         self.assertEqual(c.expected_bits(c.tip), 0x1D00FFFF)
         self.assertIn(b"money should outlive", c.blocks[c.genesis.hash].txs[0].inputs[0].witness)
 
+    def test_testnet2_genesis(self):
+        from kairos.params import TESTNET
+        c = Chain(TESTNET)
+        self.assertEqual(c.genesis.hash.hex(),
+                         "00000c4ef85d7acc2581086d8a1b38789b661dbbcd9452e7bb6e3b666731aa89")
+        self.assertNotEqual(TESTNET.chain_id, MAINNET.chain_id)
+        self.assertNotEqual(TESTNET.magic, MAINNET.magic)
+
+
+class TestSoftForks(unittest.TestCase):
+    """BIP8-style version-bit activation on regtest: window 8, threshold 6."""
+
+    def states(self, chain):
+        return chain.deployment_info(chain.tip)["pq"]["state"]
+
+    def test_lifecycle_started_locked_in_active(self):
+        chain, clock = new_chain()
+        w = Wallet(chain.params, seed=b"v" * 32)
+        self.assertEqual(self.states(chain), "started")     # start_height 0
+        chain.signal.add("pq")
+        for _ in range(7):                                   # heights 1..7 signal: 7 >= 6
+            mine_block(chain, clock, w.mining_address)
+        self.assertTrue(chain.tip.header.version >> 16 & 1)
+        self.assertEqual(self.states(chain), "locked_in")    # window 1 (heights 8..15)
+        self.assertFalse(chain.pq_active(chain.tip))
+        for _ in range(8):
+            mine_block(chain, clock, w.mining_address)
+        self.assertEqual(chain.height, 15)
+        self.assertEqual(self.states(chain), "active")       # window 2 (heights 16..)
+        self.assertTrue(chain.pq_active(chain.tip))
+        # a miner that keeps signalling after activation is harmless; the bit is dropped
+        mine_block(chain, clock, w.mining_address)
+        self.assertFalse(chain.tip.header.version >> 16 & 1)
+
+    def test_below_threshold_stays_started(self):
+        chain, clock = new_chain()
+        w = Wallet(chain.params, seed=b"v" * 32)
+        chain.signal.add("pq")
+        for i in range(7):
+            if i == 4:
+                chain.signal.discard("pq")                    # only 4 of the 7 signal
+            mine_block(chain, clock, w.mining_address)
+        self.assertEqual(self.states(chain), "started")
+        info = chain.deployment_info(chain.tip)["pq"]
+        self.assertEqual(info["state"], "started")
+
+    def test_timeout_fails_and_state_survives_reload(self):
+        from kairos.params import Deployment
+        dep = Deployment("pq", 16, start_height=8, timeout_height=24, window=8, threshold=6)
+        chain, clock = new_chain(deployments=(dep,))
+        w = Wallet(chain.params, seed=b"v" * 32)
+        self.assertEqual(self.states(chain), "defined")
+        for _ in range(8):
+            mine_block(chain, clock, w.mining_address)
+        self.assertEqual(self.states(chain), "started")     # from height 8
+        for _ in range(16):
+            mine_block(chain, clock, w.mining_address)       # nobody signals
+        self.assertEqual(self.states(chain), "failed")       # timeout at 24
+        with tempfile.TemporaryDirectory() as d:
+            c1 = Chain(chain.params, datadir=d, now=clock)
+            for b in chain.blocks_after([chain.genesis.hash]):
+                c1.submit_block(b)
+            c1.close()
+            c2 = Chain(chain.params, datadir=d, now=clock)   # recomputed from headers
+            self.assertEqual(self.states(c2), "failed")
+            c2.close()
+
 
 class TestQuantumEmergency(unittest.TestCase):
     def test_lamport_spend_and_schnorr_shutdown(self):
         chain, clock = new_chain()
         alice = Wallet(chain.params, seed=b"q" * 32)
         bob = Wallet(chain.params, seed=b"r" * 32)
+        addr = alice.mining_address
         for _ in range(4):
-            mine_block(chain, clock, alice.mining_address)
-        # Soft fork: from the next block, elliptic-curve spends are invalid.
-        pq_params = replace(chain.params, pq_emergency_height=chain.height + 1)
-        chain.params = pq_params
-        alice.params = pq_params
-        chain.sig_cache.clear()
+            mine_block(chain, clock, addr)
+        # Soft fork activated by miner signalling: after it, elliptic-curve spends are invalid.
+        chain.signal.add("pq")
+        while not chain.pq_active(chain.tip):
+            mine_block(chain, clock, alice._derive().address)
         ec_tx = alice.create_tx(chain, bob.mining_address, COIN)
         with self.assertRaisesRegex(ValidationError, "signature"):
             chain.accept_tx(ec_tx)
         pq_tx = alice.create_tx(chain, bob.mining_address, COIN, post_quantum=True)
         self.assertGreater(pq_tx.size, 24_000)
         # The sweep took every coin at the address: its Lamport key is now retired.
-        self.assertEqual(len(pq_tx.inputs), len(alice.coins(chain)))
+        self.assertEqual(len(pq_tx.inputs), len([c for c in alice.coins(chain).values() if c.address == addr]))
         self.assertTrue(chain.accept_tx(pq_tx))
         mine_block(chain, clock, alice._derive().address)
         self.assertEqual(bob.balance(chain)["spendable"], COIN)
+        # the Lamport key is retired: the wallet refuses to ever sign with it again
+        self.assertIn(0, alice.pq_revealed)
+        self.assertNotEqual(alice.mining_address, addr)
+
+    def test_flag_day_override(self):
+        chain, clock = new_chain(pq_emergency_height=3)
+        self.assertFalse(chain.pq_active(chain.tip))
+        w = Wallet(chain.params, seed=b"q" * 32)
+        mine_block(chain, clock, w.mining_address)
+        mine_block(chain, clock, w.mining_address)
+        self.assertTrue(chain.pq_active(chain.tip))
 
 
 class TestNetwork(unittest.TestCase):

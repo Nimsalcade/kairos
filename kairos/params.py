@@ -10,6 +10,23 @@ MAX_MONEY = 2 ** 63 - 1
 
 
 @dataclass(frozen=True)
+class Deployment:
+    """A soft fork activated by miner signalling in header version bits
+    (BIP8-style, height based). States, decided once per window from the
+    signalling in the previous window:
+
+        DEFINED -> STARTED (from start_height) -> LOCKED_IN (threshold reached)
+        -> ACTIVE one window later. STARTED -> FAILED if timeout_height passes
+        (timeout 0 = the switch stays armed forever, as an emergency must)."""
+    name: str
+    bit: int                       # header version bit, 16..28
+    start_height: int = 0
+    timeout_height: int = 0
+    window: int = 2016             # ~2.8 days at 120 s blocks
+    threshold: int = 1916          # 95 %
+
+
+@dataclass(frozen=True)
 class ChainParams:
     name: str
     hrp: str                        # bech32m address prefix
@@ -32,7 +49,8 @@ class ChainParams:
     base_fee_change_denom: int = 8  # max +/-12.5% base-fee move per block
     max_future_drift: int = 2 * 3600
     mtp_window: int = 11
-    pq_emergency_height: Optional[int] = None  # set by soft fork if ECDLP falls
+    pq_emergency_height: Optional[int] = None  # flag-day override; normally activated by the "pq" deployment
+    deployments: tuple = ()                    # (Deployment, ...) soft forks this release knows
     asert_anchor_bits: Optional[int] = None    # starting difficulty for block 1 (fair launch)
     mm_chain_id: int = 0x4B52                   # merge-mining slot id ("KR")
     auxpow_start_height: int = 1                # merge-mining allowed from block 1
@@ -100,18 +118,27 @@ def next_base_fee(params: ChainParams, base_fee: int, block_size: int) -> int:
 
 # ------------------------------------------------------------- networks
 
+# The post-quantum emergency switch. Once ACTIVE, elliptic-curve (Schnorr)
+# spends are invalid and only hash-based Lamport spends are accepted.
+PQ_DEPLOYMENT = Deployment("pq", bit=16, start_height=0, timeout_height=0)
+
 MAINNET = ChainParams(
     name="main", hrp="krs", chain_id=b"KRS\x01", magic=b"\xf9\x4b\x52\x53",
     pow_limit=(1 << 236) - 1,
     genesis_bits=0x1E0FFFFF,
-    genesis_time=1790035200,          # 2026-09-22T00:00:00Z
+    genesis_time=1790035200,          # placeholder: re-mined with a fresh message at launch (LAUNCH.md)
     genesis_nonce=338424,
     asert_anchor_bits=0x1D00FFFF,     # block 1 starts at Bitcoin's 2009 "difficulty 1"
+    deployments=(PQ_DEPLOYMENT,),
 )
 
+# Testnet 2 (0.4.0). The 0.3 testnet was reset because the signature hash and
+# the activation rules changed; testnet coins never had value.
 TESTNET = replace(
-    MAINNET, name="test", hrp="tkrs", chain_id=b"KRS\x02", magic=b"\x0b\x4b\x52\x53",
-    genesis_time=1790035201, genesis_nonce=2827031, coinbase_maturity=20,
+    MAINNET, name="test", hrp="tkrs", chain_id=b"KRS\x03", magic=b"\x0c\x4b\x52\x53",
+    genesis_time=1790208000,          # 2026-09-24T00:00:00Z
+    genesis_nonce=705116,
+    coinbase_maturity=20,
     asert_anchor_bits=0x1E03FFFF,     # CPU-friendly start; ASERT raises it as miners join
     seeds=("95.179.255.186:19333", "45.76.176.39:19333", "207.246.114.19:19333"),
 )
@@ -120,6 +147,7 @@ REGTEST = replace(
     MAINNET, name="regtest", hrp="krt", chain_id=b"KRT\x01", magic=b"\xfa\x4b\x52\x54",
     pow_limit=(1 << 252) - 1, genesis_bits=0x200FFFFF, no_retarget=True,
     coinbase_maturity=2, genesis_nonce=14, asert_anchor_bits=None,
+    deployments=(replace(PQ_DEPLOYMENT, window=8, threshold=6),),
 )
 
 NETWORKS = {"main": MAINNET, "test": TESTNET, "regtest": REGTEST}

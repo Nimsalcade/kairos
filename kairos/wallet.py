@@ -4,6 +4,11 @@ Kairos wallet.
 Keys are derived deterministically from a single 32-byte seed, so one backup
 restores everything. Each receive address gets its own Schnorr key AND its own
 Lamport one-time key; the Lamport key is never revealed unless used.
+
+Address hygiene: every mined block, every payment and every change output goes
+to a fresh address, so a Schnorr public key is revealed on the wire at most
+once (when its coins are spent). A restored wallet finds its addresses again
+by scanning the chain with a gap limit, like BIP44 wallets do.
 """
 import hashlib
 import hmac
@@ -19,6 +24,8 @@ from .crypto import (tagged_hash, pubkey_from_seckey, schnorr_sign, lamport_keyg
 from .params import ChainParams, COIN
 from .tx import (Transaction, TxIn, TxOut, OutPoint, make_address,
                  schnorr_witness, lamport_witness)
+
+GAP_LIMIT = 20
 
 
 class Key:
@@ -46,7 +53,10 @@ class Wallet:
         self.seed = seed or os.urandom(32)
         self.path = path
         self.passphrase = None
-        self.pq_revealed = set()
+        self._enc = None             # (salt, derived key) cached so saves do not re-run scrypt
+        self.pq_revealed = set()     # key indices whose Lamport key has signed (never again)
+        self.used = set()            # key indices that have received coins on chain
+        self.chain = None
         self.keys: List[Key] = []
         self.by_addr: Dict[bytes, Key] = {}
         for _ in range(max(n_keys, 1)):
@@ -78,6 +88,7 @@ class Wallet:
     def load(cls, params: ChainParams, path: str, passphrase: Optional[str] = None) -> "Wallet":
         with open(path) as f:
             d = json.load(f)
+        enc = None
         if d.get("encrypted"):
             if passphrase is None:
                 raise PermissionError("wallet is encrypted: passphrase required")
@@ -88,11 +99,15 @@ class Wallet:
             if not hmac.compare_digest(hmac.new(k[32:], header + ct, hashlib.sha256).digest(), tag):
                 raise PermissionError("wrong passphrase or corrupted wallet file")
             seed = bytes(a ^ b for a, b in zip(ct, cls._stream(k[:32], nonce, len(ct))))
+            if (d["n"], d["r"], d["p"]) == (cls.KDF_N, cls.KDF_R, cls.KDF_P):
+                enc = (salt, k)
         else:
             seed = bytes.fromhex(d["seed"])
         w = cls(params, seed, d["n_keys"], path)
         w.passphrase = passphrase
+        w._enc = enc
         w.pq_revealed = set(d.get("pq_revealed", []))
+        w.used = set(d.get("used", []))
         return w
 
     @classmethod
@@ -108,11 +123,14 @@ class Wallet:
         if not self.path:
             return
         d = {"format": 2, "network": self.params.name, "n_keys": len(self.keys),
-             "pq_revealed": sorted(self.pq_revealed)}
+             "pq_revealed": sorted(self.pq_revealed), "used": sorted(self.used)}
         if getattr(self, "passphrase", None):
-            salt, nonce = os.urandom(16), os.urandom(16)
             n, r, p = self.KDF_N, self.KDF_R, self.KDF_P
-            k = self._kdf(self.passphrase, salt, n, r, p)
+            if self._enc is None:
+                salt = os.urandom(16)
+                self._enc = (salt, self._kdf(self.passphrase, salt, n, r, p))
+            salt, k = self._enc
+            nonce = os.urandom(16)
             ct = bytes(a ^ b for a, b in zip(self.seed, self._stream(k[:32], nonce, 32)))
             header = f"{n}:{r}:{p}".encode() + salt + nonce
             tag = hmac.new(k[32:], header + ct, hashlib.sha256).digest()
@@ -132,6 +150,7 @@ class Wallet:
         if len(passphrase) < 10:
             raise ValueError("passphrase must be at least 10 characters")
         self.passphrase = passphrase
+        self._enc = None
         self.save()
 
     # ------------------------------------------------------ backup
@@ -140,7 +159,7 @@ class Wallet:
         return bech32m_encode("krsseed", self.seed)
 
     @classmethod
-    def restore(cls, params: ChainParams, code: str, path: str, n_keys: int = 20,
+    def restore(cls, params: ChainParams, code: str, path: str, n_keys: int = GAP_LIMIT,
                 passphrase: Optional[str] = None) -> "Wallet":
         seed = bech32m_decode("krsseed", code.strip())
         if len(seed) != 32:
@@ -162,13 +181,21 @@ class Wallet:
         self.save()
         return self.encode(k.address)
 
+    def _unused_index(self) -> int:
+        for i in range(len(self.keys)):
+            if i not in self.used and i not in self.pq_revealed:
+                return i
+        self._derive()
+        self.save()
+        return len(self.keys) - 1
+
     @property
     def mining_address(self) -> bytes:
-        """First address whose one-time post-quantum key is still unrevealed."""
-        for i, k in enumerate(self.keys):
-            if i not in self.pq_revealed:
-                return k.address
-        return self._derive().address
+        """A fresh address: never paid, its one-time post-quantum key unrevealed.
+        Once a block or payment lands on it, the next call moves to the next one."""
+        return self.keys[self._unused_index()].address
+
+    receive_address = mining_address
 
     def encode(self, addr: bytes) -> str:
         return bech32m_encode(self.params.hrp, addr)
@@ -178,6 +205,50 @@ class Wallet:
         if len(a) != 32:
             raise ValueError("bad address length")
         return a
+
+    # ------------------------------------------------------ chain tracking
+    def attach(self, chain, gap: int = GAP_LIMIT):
+        """Follow a chain: rescan history for our addresses (deriving past the
+        gap limit until `gap` consecutive addresses are unused) and keep the
+        used-set current as blocks connect."""
+        self.chain = chain
+        self.rescan(chain, gap)
+        chain.listeners.append(self._on_chain_event)
+
+    def rescan(self, chain, gap: int = GAP_LIMIT):
+        with chain.lock:
+            seen = set()
+            for idx in chain.active[1:]:
+                for tx in chain.blocks[idx.hash].txs:
+                    for o in tx.outputs:
+                        seen.add(o.address)
+            while True:
+                for i, k in enumerate(self.keys):
+                    if k.address in seen:
+                        self.used.add(i)
+                last_used = max(self.used) if self.used else -1
+                if len(self.keys) - 1 - last_used >= gap:
+                    break
+                self._derive()
+        self.save()
+
+    def _on_chain_event(self, event, idx):
+        if event != "tip":
+            return
+        blk = self.chain.blocks[idx.hash]
+        hit = False
+        for tx in blk.txs:
+            for o in tx.outputs:
+                k = self.by_addr.get(o.address)
+                if k is not None:
+                    i = self.keys.index(k)
+                    if i not in self.used:
+                        self.used.add(i)
+                        hit = True
+        if hit:
+            if len(self.keys) - 1 - max(self.used) < GAP_LIMIT:
+                self._derive()
+            self.save()
 
     # ------------------------------------------------------ balance
     def coins(self, chain, include_immature=False):
@@ -212,8 +283,6 @@ class Wallet:
             tx = self._build(chain, selected, to, amount, total, base_fee, tip_per_byte,
                              expiry_blocks, post_quantum)
             if tx is not None:
-                if post_quantum:
-                    self.save()
                 return tx
         raise ValueError("insufficient funds")
 
@@ -231,7 +300,8 @@ class Wallet:
             outs = [TxOut(amount, to)]
             if change > 0:
                 if change_key is None:
-                    change_key = self._derive()     # always a fresh, never-revealed key
+                    change_key = self.keys[self._unused_index()]   # fresh, never-revealed key
+                    self.used.add(self.keys.index(change_key))     # reserve it now
                     self.save()
                 outs.append(TxOut(change, change_key.address))
             tx = Transaction([TxIn(op, b"\x00" * wit_len) for op, _ in selected], outs, exp)
@@ -246,17 +316,25 @@ class Wallet:
         if self.params.name == "main" and not _crypto.HARDENED:
             raise RuntimeError("refusing to sign on mainnet without libsecp256k1: "
                                "pip install coincurve")
-        sh = tx.sighash(self.params.chain_id)
+        sh = tx.sighash(self.params.chain_id, [(c.value, c.address) for _, c in selected])
+        if pq:
+            # Record every one-time key as spent BEFORE any signature exists, so a
+            # crash between signing and saving can never lead to a second signature.
+            idxs = []
+            for _, c in selected:
+                k = self.by_addr[c.address]
+                i = self.keys.index(k)
+                if i in self.pq_revealed and getattr(k, "_pq_signed", None) != sh:
+                    raise RuntimeError("this address's one-time key was already used")
+                idxs.append(i)
+            self.pq_revealed.update(idxs)
+            self.save()
         for inp, (op, c) in zip(tx.inputs, selected):
             k = self.by_addr[c.address]
             if pq:
-                idx = self.keys.index(k)
-                if idx in self.pq_revealed and getattr(k, "_pq_signed", None) != sh:
-                    raise RuntimeError("this address's one-time key was already used")
                 sk, lpub = k.lamport
                 inp.witness = lamport_witness(k.pubkey, lpub, lamport_sign(sh, sk))
                 k._pq_signed = sh
-                self.pq_revealed.add(idx)
             else:
                 inp.witness = schnorr_witness(k.pubkey, k.pqroot, schnorr_sign(sh, k.seckey, os.urandom(32)))
         tx.invalidate()

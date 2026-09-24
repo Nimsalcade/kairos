@@ -1,5 +1,5 @@
 """
-Kairos peer-to-peer node (protocol 2).
+Kairos peer-to-peer node (protocol 4).
 
 Newline-delimited JSON over TCP. Every message carries the network magic.
 
@@ -17,7 +17,9 @@ Hardening:
   * misbehaviour score per peer; 100 points = disconnect + 24h IP ban
   * per-peer token-bucket message rate limit and a hard line-size cap
   * inbound peer cap, handshake timeout, idle timeout with pings
-  * all parsing errors are caught per message; a bad peer cannot crash the node
+  * every exception while handling a message counts as misbehaviour, whatever
+    its type (deep JSON nesting, numeric overflow...): a bad peer cannot crash
+    the node or leave a dead connection holding a slot
 """
 import json
 import os
@@ -32,9 +34,9 @@ from .block import Block, mine
 from .chain import Chain, ValidationError
 from .tx import Transaction
 
-PROTOCOL_VERSION = 3
-MIN_PROTOCOL_VERSION = 2          # 0.2.x peers are still served, minus address gossip
-AGENT = "/kairos:0.3.0/"
+PROTOCOL_VERSION = 4              # 0.4.0: testnet 2 (new sighash, soft-fork signalling)
+MIN_PROTOCOL_VERSION = 4          # older nodes are on another chain; they are disconnected, not banned
+AGENT = "/kairos:0.4.0/"
 MAX_OUTBOUND = 8
 MAX_ADDR_PER_MSG = 1000
 CONNMAN_INTERVAL = 2
@@ -50,6 +52,14 @@ RATE_BURST = 1000
 MAX_SEND_QUEUE = 64 * 1024 * 1024    # a peer that won't read this much is dropped
 BENIGN_TX_ERRORS = ("conflicts", "mempool full", "below base fee", "missing or spent",
                     "expired", "immature")
+
+
+def _int(v, lo=0, hi=1 << 62) -> int:
+    """A JSON number that is really an integer in range. Floats (including the
+    1e999 that json.loads turns into infinity) and bools are rejected."""
+    if not isinstance(v, int) or isinstance(v, bool) or not lo <= v <= hi:
+        raise ValueError("bad integer")
+    return v
 
 
 class Peer:
@@ -162,9 +172,9 @@ class Peer:
                     if not isinstance(msg, dict) or msg.get("magic") != self.node.magic_hex:
                         raise ValueError("bad envelope")
                     self.node._handle(self, msg)
-                except (ValueError, KeyError, TypeError) as e:
-                    self.node.misbehave(self, 100, f"malformed message: {e}")
-        except OSError:
+                except Exception as e:                      # noqa: BLE001 - any failure is the peer's
+                    self.node.misbehave(self, 100, f"malformed message: {type(e).__name__}: {e}")
+        except Exception:                                   # noqa: BLE001 - socket gone, or a bug
             pass
         self.close()
 
@@ -330,14 +340,14 @@ class Node:
                     self.addrman.mark_self(peer.addr_key)   # never dial it again
                 peer.close()          # connected to ourselves
                 return
-            proto = int(msg.get("proto", 0))
+            proto = _int(msg.get("proto", 0))
             if proto < MIN_PROTOCOL_VERSION:
                 peer.close()
                 return
             peer.proto = proto
             lp = msg.get("port")
-            peer.listen_port = lp if isinstance(lp, int) and 0 < lp < 65536 else 0
-            peer.height = int(msg.get("height", 0))
+            peer.listen_port = lp if isinstance(lp, int) and not isinstance(lp, bool) and 0 < lp < 65536 else 0
+            peer.height = _int(msg.get("height", 0), 0, 1 << 32)
             peer.ready = True
             if peer.outbound and peer.addr_key:
                 h, p = parse(peer.addr_key)
@@ -346,7 +356,7 @@ class Node:
                 self.log(f"[{self.name}] connected to {peer.addr_key}")
             elif peer.listen_port:
                 self.addrman.add(peer.addr[0], peer.listen_port)
-            if peer.proto >= 3 and peer.outbound:
+            if peer.outbound:
                 peer.send({"type": "getaddr"})
             if peer.height > self.chain.height:
                 self._request_sync(peer)
@@ -415,9 +425,9 @@ class Node:
                 benign = any(b in str(e) for b in BENIGN_TX_ERRORS)
                 self.misbehave(peer, 0 if benign else 20, f"invalid tx: {e}")
         elif t == "ping":
-            peer.send({"type": "pong", "n": msg.get("n", 0)})
+            peer.send({"type": "pong", "n": _int(msg.get("n", 0))})
         elif t == "getaddr":
-            if peer.proto >= 3 and not peer.sent_addr:
+            if not peer.sent_addr:
                 peer.sent_addr = True          # answer once per connection
                 sample = self.addrman.sample(250, exclude={peer.key})
                 peer.send({"type": "addr", "addrs": [[k, int(seen)] for k, seen in sample]})
@@ -434,7 +444,7 @@ class Node:
                     continue
                 try:
                     host, port = parse(item[0])
-                    seen = float(item[1])
+                    seen = _int(item[1])
                 except (ValueError, TypeError):
                     continue
                 self.addrman.add(host, port, seen=seen)
@@ -543,9 +553,8 @@ class Node:
         self._tip_changed()
 
     def mine_one(self, address=None, extra=b"") -> Block:
-        address = address or self.wallet.mining_address
         while self.running:
-            blk = self.chain.create_block(address, extra)
+            blk = self.chain.create_block(address or self.wallet.mining_address, extra)
             start_tip = self.chain.tip
             if mine(blk.header, should_stop=lambda: self.chain.tip is not start_tip or not self.running):
                 if self.chain.submit_block(blk) == "accepted":

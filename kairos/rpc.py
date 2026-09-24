@@ -157,7 +157,18 @@ class RPCServer:
                 "chainwork": f"{t.chainwork:064x}", "utxo_root": t.header.utxo_root.hex(),
                 "generated": s["generated"] / COIN, "burned": s["burned"] / COIN,
                 "circulating": s["circulating"] / COIN, "next_base_fee": s["next_base_fee"],
+                "pq_only": self.chain.pq_active(t), "softforks": self.chain.deployment_info(t),
                 "crypto_backend": BACKEND}
+
+    def rpc_getdeploymentinfo(self):
+        return {"hash": self.chain.tip.hash.hex(), "height": self.chain.height,
+                "deployments": self.chain.deployment_info(self.chain.tip)}
+
+    def rpc_setsignal(self, name, enable=True):
+        if self.chain.deployment(str(name)) is None:
+            raise RPCError(-8, "unknown deployment")
+        (self.chain.signal.add if enable else self.chain.signal.discard)(str(name))
+        return sorted(self.chain.signal)
 
     def _index(self, h):
         idx = self.chain.index.get(_hash_arg(h))
@@ -250,7 +261,8 @@ class RPCServer:
         return {"blocks": t.height, "difficulty": self._difficulty(self.chain.expected_bits(t)),
                 "next_subsidy": subsidy(self.chain.params, t.generated) / COIN,
                 "pooledtx": len(self.chain.mempool), "chain": self.chain.params.name,
-                "merge_mining_chain_id": self.chain.params.mm_chain_id}
+                "merge_mining_chain_id": self.chain.params.mm_chain_id,
+                "signalling": sorted(self.chain.signal)}
 
     # ------------------------------------------------------------ wallet
     def _w(self):
@@ -270,6 +282,11 @@ class RPCServer:
 
     def rpc_getnewaddress(self, label=""):
         return self._w().new_address()
+
+    def rpc_rescanwallet(self):
+        w = self._w()
+        w.rescan(self.chain)
+        return {"keys": len(w.keys), "used": len(w.used)}
 
     def rpc_getbalance(self):
         return self._w().balance(self.chain)["spendable"] / COIN

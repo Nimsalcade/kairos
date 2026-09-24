@@ -173,6 +173,9 @@ def run_command(line, chain, wallet, node):
             print(f"height {s['height']} tip {chain.tip.hash.hex()}\n"
                   f"circulating {fmt(s['circulating'])} burned {fmt(s['burned'])} "
                   f"base fee {s['next_base_fee']} motes/B mempool {len(chain.mempool)} peers {len(node.peers)}")
+            for name, d in chain.deployment_info().items():
+                extra = f" ({d['signalled']}/{d['elapsed']} signalling)" if d["state"] == "started" else ""
+                print(f"soft fork {name}: {d['state']}{extra}")
         elif cmd == "balance":
             b = wallet.balance(chain)
             print(f"spendable {fmt(b['spendable'])}  immature {fmt(b['immature'])}  "
@@ -230,6 +233,12 @@ def cmd_node(args):
     wallet = open_wallet(args, p)
     print(f"loading chain from {datadir} ...")
     chain = Chain(p, datadir=datadir)
+    chain.signal.update(args.signal or [])
+    for name in chain.signal:
+        if chain.deployment(name) is None:
+            raise SystemExit(f"unknown deployment {name!r}; known: "
+                             f"{', '.join(d.name for d in p.deployments) or 'none'}")
+    wallet.attach(chain)
     p2p, rpcp = DEFAULT_PORTS[p.name]
     node = Node(chain, host=args.bind, port=args.port or p2p, wallet=wallet, log=say,
                 name="node", max_inbound=args.maxinbound, max_outbound=args.maxoutbound)
@@ -253,7 +262,7 @@ def cmd_node(args):
             print("no --connect peers and no seed nodes for this network: running alone")
     if args.mine:
         node.start_mining()
-        print("mining started")
+        print("mining started" + (f", signalling {sorted(chain.signal)}" if chain.signal else ""))
     if args.daemon or not sys.stdin.isatty():
         print("running (Ctrl-C to stop)")
         try:
@@ -349,6 +358,8 @@ def main(argv=None):
     n.add_argument("--maxinbound", type=int, default=32)
     n.add_argument("--maxoutbound", type=int, default=8)
     n.add_argument("--daemon", action="store_true", help="no console")
+    n.add_argument("--signal", action="append", metavar="NAME",
+                   help="signal readiness for a soft fork in mined blocks (e.g. pq)")
     r = sub.add_parser("rpc", parents=[common])
     r.add_argument("method")
     r.add_argument("params", nargs="*")
