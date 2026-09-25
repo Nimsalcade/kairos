@@ -8,6 +8,9 @@ No consensus change.
   the next block, because the miner kept the block it had built (seen on
   testnet 2 at 6054–6055). The miner now rebuilds its block 10 seconds after
   new transactions arrive. Not consensus.
+- Test fix: `test_select_avoids_connected_groups` used a random address-manager
+  key, and about once in 250 runs two of its three addresses shared a slot,
+  so CI failed at random. It now uses a fixed key.
 - Fix: `kairos rpc ... | head` printed a BrokenPipeError traceback when the
   reader stopped early.
 - `docs/rehearsal-testnet2.md` filled in: activation at 6048, Lamport sends

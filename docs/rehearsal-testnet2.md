@@ -168,9 +168,11 @@ Lamport can move thousands of coins in hours, but not a real UTXO set.
   26 ms on a node that has not seen its transactions, on both crypto
   backends (Lamport verification is hashing only). Validation is not the
   bottleneck; size is.
-- **Relay and propagation time:** *to fill* from the seeds' logs for block
-  6082 (arrival time on each seed, and any stall or misbehaviour line).
-  Between 0.4.1 nodes a block travels as hex inside JSON, so block 6082 was
+- **Relay and propagation time.** Seed 95.179.255.186 logged block 6081 at
+  15:32:15 UTC and block 6082 at 15:32:23, with no stall or misbehaviour
+  line that day. So the 1.50 MB block was mined on top of 6081 and reached
+  that seed within 8 seconds, mining time included. Arrival times on the
+  other two seeds: *to fill*. Between 0.4.1 nodes a block travels as hex inside JSON, so block 6082 was
   about 3 MB on each link; the binary frames in 0.4.2 halve that.
 - **Mempool.** The miner's node accepted two transactions of 937 KB and
   567 KB at once and mined both in the next block (the mempool holds 64 MB).
