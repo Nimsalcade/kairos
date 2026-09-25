@@ -8,6 +8,16 @@ No consensus change.
   once per peer. Peer threads compared the tip against the one they saw
   before their own submit, so a thread also reported tips another thread had
   produced. The node now reports each tip once. Logging only.
+- Binary P2P (protocol 5, `kairos/wire.py`): after the JSON version
+  handshake, two 0.4.2 nodes switch to binary frames (magic, command,
+  length, payload). Blocks, transactions and headers travel as raw bytes
+  instead of hex, which halves block traffic, and each frame's length is
+  checked against a per-command limit before its payload is read. With a
+  0.4.0 or 0.4.1 node the conversation stays JSON; interoperation was
+  checked in both directions against the released 0.4.1 code. Frames decode
+  into the same messages as JSON, so validation is one code path. Hostile
+  frames (bad magic, oversized lengths, garbage) earn a ban and never crash
+  the node. Encrypted transport (BIP324) is left to the production node.
 - MuSig2 (BIP327) in `kairos/musig.py`: key aggregation, tweaks, nonce
   generation and aggregation, partial signing and verification, signature
   aggregation, deterministic signing. It passes every official BIP327 test

@@ -1,7 +1,12 @@
 """
-Kairos peer-to-peer node (protocol 4).
+Kairos peer-to-peer node (protocol 5).
 
-Newline-delimited JSON over TCP. Every message carries the network magic.
+The handshake is one line of JSON each way. If both sides advertise
+"binary": 1 in their version (protocol 5), every later message is a binary
+frame (kairos/wire.py): raw blocks and transactions instead of hex, and
+per-command size limits checked before reading. With a 0.4 node, which
+advertises nothing, the whole conversation stays newline-delimited JSON, where
+every message carries the network magic. The messages are the same either way:
 
     version    {proto, genesis, height, nonce, agent, port}   first message, both ways
     inv        {blocks:[hash], txs:[txid]}              announce, never push
@@ -40,8 +45,9 @@ from .addrman import AddrMan, parse
 from .block import Block, mine
 from .chain import Chain, ValidationError
 from .tx import Transaction
+from . import wire
 
-PROTOCOL_VERSION = 4              # 0.4.0: testnet 2 (new sighash, soft-fork signalling)
+PROTOCOL_VERSION = 5              # binary frames after the handshake (0.4.2); 4 = JSON only
 MIN_PROTOCOL_VERSION = 4          # older nodes are on another chain; they are disconnected, not banned
 AGENT = "/kairos:0.4.1/"
 MAX_OUTBOUND = 8
@@ -100,6 +106,7 @@ class Peer:
         self.sync_pending = False
         self.unconnecting = 0         # headers batches that did not attach to our index
         self.inflight = set()         # block hashes we asked this peer for
+        self.binary = False           # both sides speak binary frames after the handshake
 
     @property
     def key(self):
@@ -113,8 +120,11 @@ class Peer:
         two nodes sending to each other at once can never deadlock."""
         if not self.alive:
             return
-        msg["magic"] = self.node.magic_hex
-        data = (json.dumps(msg) + "\n").encode()
+        if self.binary and msg.get("type") != "version":
+            data = wire.encode(self.node.chain.params.magic, msg)
+        else:
+            msg["magic"] = self.node.magic_hex
+            data = (json.dumps(msg) + "\n").encode()
         with self.wlock:
             if self.outbytes + len(data) > MAX_SEND_QUEUE:
                 overflow = True
@@ -161,9 +171,38 @@ class Peer:
         self.tokens -= 1
         return True
 
+    def _run_binary(self):
+        """Binary frames, once both sides have switched (see wire.py)."""
+        magic = self.node.chain.params.magic
+        while self.alive:
+            try:
+                frame = wire.read_frame(self.f, magic)
+            except EOFError:
+                return                # closed mid-frame (peer restarted): not an attack
+            except wire.FrameError as e:
+                self.node.misbehave(self, 100, f"malformed frame: {e}")
+                return                # the stream cannot be resynchronised
+            if frame is None:
+                return
+            command, payload = frame
+            self.last_recv = time.time()
+            solicited = command in ("block", "tx") and self.expected > 0
+            if solicited:
+                self.expected -= 1
+            elif not self._rate_ok():
+                self.node.misbehave(self, 100, "message flood")
+                return
+            try:
+                self.node._handle(self, wire.decode_payload(command, payload))
+            except Exception as e:                          # noqa: BLE001 - any failure is the peer's
+                self.node.misbehave(self, 100, f"malformed message: {type(e).__name__}: {e}")
+
     def run(self):
         try:
             while self.alive:
+                if self.binary:
+                    self._run_binary()
+                    break
                 line = self.f.readline(MAX_LINE + 1)
                 if not line:
                     break
@@ -195,8 +234,9 @@ class Peer:
 class Node:
     def __init__(self, chain: Chain, host="127.0.0.1", port=0, wallet=None, log=None,
                  name="node", max_inbound=MAX_INBOUND, max_outbound=MAX_OUTBOUND,
-                 use_seeds=True):
+                 use_seeds=True, binary=True):
         self.chain = chain
+        self.binary = binary          # offer binary frames (False behaves like a 0.4 node)
         self.wallet = wallet
         self.name = name
         self.log = log or (lambda *a: None)
@@ -269,7 +309,8 @@ class Node:
         # (tip announcement, sync request) ahead of it, and the peer bans us.
         p.send({"type": "version", "proto": PROTOCOL_VERSION,
                 "genesis": self.chain.genesis.hash.hex(), "height": self.chain.height,
-                "nonce": self.nonce, "agent": AGENT, "port": self.port})
+                "nonce": self.nonce, "agent": AGENT, "port": self.port,
+                **({"binary": 1} if self.binary else {})})
         with self.plock:
             self.peers.append(p)
         threading.Thread(target=p.writer, daemon=True).start()
@@ -386,6 +427,9 @@ class Node:
                 peer.close()
                 return
             peer.proto = proto
+            # Both sides switch to binary frames after the versions, or neither does.
+            # This must be decided before anything else is sent to this peer.
+            peer.binary = self.binary and proto >= 5 and msg.get("binary") == 1
             lp = msg.get("port")
             peer.listen_port = lp if isinstance(lp, int) and not isinstance(lp, bool) and 0 < lp < 65536 else 0
             peer.height = _int(msg.get("height", 0), 0, 1 << 32)
