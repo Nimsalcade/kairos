@@ -3,8 +3,8 @@
 Status: **activated and measured.** The `pq` deployment activated at block
 6048 as scheduled. Lamport-signed payments were sent, mined and received,
 including a payment that needed 61 coins and was split into two
-transactions. Every measured size matched the model to the byte. Only
-propagation time between the seeds (section 4.5) remains open.
+transactions. Every measured size matched the model to the byte, and the
+largest block reached all three seeds within the same second.
 
 This is the rehearsal required by LAUNCH.md, Gate 3: activate the quantum
 emergency on a public network by miner signalling, then move coins with
@@ -168,11 +168,12 @@ Lamport can move thousands of coins in hours, but not a real UTXO set.
   26 ms on a node that has not seen its transactions, on both crypto
   backends (Lamport verification is hashing only). Validation is not the
   bottleneck; size is.
-- **Relay and propagation time.** Seed 95.179.255.186 logged block 6081 at
-  15:32:15 UTC and block 6082 at 15:32:23, with no stall or misbehaviour
-  line that day. So the 1.50 MB block was mined on top of 6081 and reached
-  that seed within 8 seconds, mining time included. Arrival times on the
-  other two seeds: *to fill*. Between 0.4.1 nodes a block travels as hex inside JSON, so block 6082 was
+- **Relay and propagation time.** All three seeds logged block 6082 in the
+  same second, 15:32:23 UTC, and block 6081 at 15:32:15–16. None logged a
+  stall or misbehaviour line that day. So the 1.50 MB block reached every
+  seed within 8 seconds of 6081, mining time included, and the seeds
+  received it within one second of each other (the log's resolution).
+  Between 0.4.1 nodes a block travels as hex inside JSON, so block 6082 was
   about 3 MB on each link; the binary frames in 0.4.2 halve that.
 - **Mempool.** The miner's node accepted two transactions of 937 KB and
   567 KB at once and mined both in the next block (the mempool holds 64 MB).

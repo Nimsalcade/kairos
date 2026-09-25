@@ -15,7 +15,8 @@ No consensus change.
   reader stopped early.
 - `docs/rehearsal-testnet2.md` filled in: activation at 6048, Lamport sends
   mined from 6054, a 600 KRS payment split into two transactions (61 inputs,
-  1.50 MB block), `getpqstats` over 6048–6085, and conclusions. Every observed
+  1.50 MB block, which reached all three seeds in the same second),
+  `getpqstats` over 6048–6085, and conclusions. Every observed
   size matched the model to the byte. LAUNCH.md's rehearsal item is done.
 - Fix: a node syncing from several peers logged the same "new tip" up to
   once per peer. Peer threads compared the tip against the one they saw
