@@ -322,7 +322,7 @@ footer p{max-width:var(--measure)}
           <h3>How the switch works</h3>
           <p>Miners signal readiness with a bit in the block header. Once 95% of a 2016-block window signals, the change locks in, and one window later it is active: elliptic-curve spends become invalid and every coin can still be spent with its Lamport key. Nobody's coins are frozen and none are stolen.</p>
           <p>The switch has a start height of zero and no timeout, so it stays armed for the life of the chain. For the case where miners cannot be trusted to signal in time, an emergency release can fix it at a flag-day height.</p>
-          <p>The first rehearsal is running on testnet 2 now. Follow the announcement thread for the activation height.</p>
+          <p>The switch has been rehearsed on testnet 2. Miners locked it in at block 4032, it activated at 6048, and from block 6054 coins moved with Lamport signatures, including a 61-coin payment that filled three quarters of a block. Every transaction was exactly the size the model predicts. That rehearsal also shows the limit: about 81 coins fit in a block, so a hash-based key can rescue coins in an emergency but cannot move a whole economy quickly. <a href="https://github.com/Nimsalcade/kairos/blob/main/docs/rehearsal-testnet2.md">Read the report</a>.</p>
         </div>
       </div>
       <div class="states" aria-label="Deployment states">
@@ -397,7 +397,7 @@ footer p{max-width:var(--measure)}
         <div class="gate done"><i></i><span>Headers-first synchronisation and peer discovery</span></div>
         <div class="gate done"><i></i><span>UTXO snapshot export and import, verified against the header commitment</span></div>
         <div class="gate done"><i></i><span>Public testnet on three continents; 82 tests on two signature backends</span></div>
-        <div class="gate"><i></i><span>Quantum-emergency rehearsal on the live testnet (in progress)</span></div>
+        <div class="gate done"><i></i><span>Quantum-emergency rehearsal on the live testnet: active at block 6048, Lamport payments mined</span></div>
         <div class="gate"><i></i><span>Independent consensus and cryptography audits</span></div>
         <div class="gate"><i></i><span>A second implementation, cross-tested against this one</span></div>
         <div class="gate"><i></i><span>At least six months of public testnet with no consensus bug in the final ninety days</span></div>

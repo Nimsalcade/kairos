@@ -251,6 +251,7 @@ class Chain:
 
         self.max_mempool_bytes = 64 * 1024 * 1024
         self.mempool_bytes = 0
+        self.mempool_seq = 0         # counts admissions, so a miner can tell its template is stale
         self.datadir = datadir
         self.blocks = BlockStore(os.path.join(datadir, BLOCK_FILE) if datadir else None)
         self.blocks.pin(g)
@@ -968,6 +969,7 @@ class Chain:
             self.mempool[tx.txid] = tx
             self.mempool_fee[tx.txid] = fee
             self.mempool_bytes += tx.size
+            self.mempool_seq += 1
             for i in tx.inputs:
                 self.mempool_spends[i.prev] = tx.txid
             return True
