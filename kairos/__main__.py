@@ -313,8 +313,17 @@ def cmd_rpc(args):
         raise SystemExit(f"cannot reach node: {e}")
     if r.get("error"):
         raise SystemExit(f"error {r['error'].get('code')}: {r['error'].get('message')}")
-    res = r["result"]
-    print(json.dumps(res, indent=2) if isinstance(res, (dict, list)) else res)
+    print_result(r["result"])
+
+
+def print_result(res):
+    try:
+        print(json.dumps(res, indent=2) if isinstance(res, (dict, list)) else res)
+        sys.stdout.flush()
+    except BrokenPipeError:
+        # the reader stopped early, as `| head` does: not an error. Point stdout at
+        # /dev/null so the flush at exit does not raise again.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
 
 
 def cmd_utxo(args):

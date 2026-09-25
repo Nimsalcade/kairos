@@ -66,6 +66,7 @@ MAX_SEND_QUEUE = 64 * 1024 * 1024    # a peer that won't read this much is dropp
 MAX_HEADERS = 2000
 BLOCKS_IN_FLIGHT_PER_PEER = 16
 BLOCK_STALL = 60                     # seconds before a requested block is asked from someone else
+TEMPLATE_REFRESH = 10                # seconds before new mempool transactions are added to the block being mined
 MAX_UNCONNECTING_HEADERS = 10
 BENIGN_TX_ERRORS = ("conflicts", "mempool full", "below base fee", "missing or spent",
                     "expired", "immature")
@@ -721,9 +722,17 @@ class Node:
 
     def mine_one(self, address=None, extra=b"") -> Block:
         while self.running:
+            start_tip, start_seq = self.chain.tip, self.chain.mempool_seq
             blk = self.chain.create_block(address or self.wallet.mining_address, extra)
-            start_tip = self.chain.tip
-            if mine(blk.header, should_stop=lambda: self.chain.tip is not start_tip or not self.running):
+            built = time.monotonic()
+
+            def stop():
+                # Rebuild on a new tip, and also when transactions arrived since the
+                # block was built: otherwise they wait a whole extra block (testnet 2
+                # showed this at heights 6054-6055).
+                return (not self.running or self.chain.tip is not start_tip
+                        or (self.chain.mempool_seq != start_seq and time.monotonic() - built >= TEMPLATE_REFRESH))
+            if mine(blk.header, should_stop=stop):
                 if self.chain.submit_block(blk) == "accepted":
                     self._note_tip(mined=True)
                     self.log(f"[{self.name}] mined block {blk.header.height} {blk.hash.hex()[:16]} "

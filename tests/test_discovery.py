@@ -242,9 +242,11 @@ class TestEclipseResistance(unittest.TestCase):
         self.assertNotEqual(pa, pb)
 
     def test_select_avoids_connected_groups(self):
-        m = AddrMan()
+        # A fixed key: with a random one, two of these addresses share a NEW slot
+        # about once in 250 runs, and the second is then not stored at all.
+        m = AddrMan(key=b"\x06" * 32)
         for h in ("8.8.1.1", "8.8.2.2", "9.9.1.1"):
-            m.add(h, 19333)
+            self.assertTrue(m.add(h, 19333))
         for _ in range(50):
             self.assertEqual(m.select(exclude_groups={"8.8"}), "9.9.1.1:19333")
         self.assertEqual(m.group("8.8.200.1"), "8.8")

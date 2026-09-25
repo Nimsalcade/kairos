@@ -1161,3 +1161,69 @@ class TestPqStats(unittest.TestCase):
             finally:
                 rpc.stop()
                 node.stop()
+
+
+class TestMinerTemplateRefresh(unittest.TestCase):
+    """A transaction that arrives while a block is being mined goes into that
+    block after a short delay, instead of waiting a whole extra block (on
+    testnet 2 a send made during block 6054 was mined only in 6055)."""
+
+    def setUp(self):
+        self.chain, clock = new_chain()
+        self.w = Wallet(REGTEST, seed=b"m" * 32)
+        for _ in range(4):
+            mine_block(self.chain, clock, self.w.mining_address)
+        clock.t += 120
+        self.tx = self.w.create_txs(self.chain, Wallet(REGTEST, seed=b"b" * 32).mining_address, COIN)[0]
+        self.node = Node(self.chain, wallet=self.w, use_seeds=False)
+
+    def tearDown(self):
+        self.node.stop()
+
+    def mine_with_arrival(self, refresh):
+        import kairos.node as node_mod
+        real_mine, templates = node_mod.mine, []
+
+        def fake_mine(header, should_stop=None, **kw):
+            templates.append(header)
+            if len(templates) == 1:
+                self.assertFalse(should_stop())          # nothing new yet: keep mining
+                self.node.submit_tx(self.tx)             # arrives mid-block
+                if not should_stop():
+                    return real_mine(header, should_stop=should_stop)
+                return False
+            return real_mine(header, should_stop=should_stop)
+        old = node_mod.TEMPLATE_REFRESH
+        node_mod.mine, node_mod.TEMPLATE_REFRESH = fake_mine, refresh
+        try:
+            return self.node.mine_one(), templates
+        finally:
+            node_mod.mine, node_mod.TEMPLATE_REFRESH = real_mine, old
+
+    def test_new_transaction_is_added_to_the_block_being_mined(self):
+        blk, templates = self.mine_with_arrival(refresh=0)
+        self.assertEqual(len(templates), 2)                  # rebuilt once
+        self.assertIn(self.tx.txid, [t.txid for t in blk.txs])
+        self.assertEqual(self.chain.mempool, {})
+
+    def test_template_is_not_rebuilt_before_the_delay(self):
+        blk, templates = self.mine_with_arrival(refresh=3600)
+        self.assertEqual(len(templates), 1)
+        self.assertNotIn(self.tx.txid, [t.txid for t in blk.txs])
+        self.assertIn(self.tx.txid, self.chain.mempool)
+
+
+class TestCliPipe(unittest.TestCase):
+    def test_rpc_output_into_a_closed_pipe_is_not_an_error(self):
+        # `kairos rpc listunspent | head` printed a BrokenPipeError traceback
+        import subprocess
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        code = "from kairos.__main__ import print_result; print_result([{'n': i} for i in range(200000)])"
+        p = subprocess.Popen([sys.executable, "-c", code], cwd=root, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE)
+        p.stdout.readline()
+        p.stdout.close()                                     # what `head` does after its lines
+        err = p.stderr.read().decode()
+        p.stderr.close()
+        self.assertEqual(p.wait(timeout=30), 0, err)
+        self.assertNotIn("Traceback", err)

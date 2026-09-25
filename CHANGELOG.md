@@ -4,6 +4,20 @@
 
 No consensus change.
 
+- Fix: a transaction that arrived while a block was being mined waited for
+  the next block, because the miner kept the block it had built (seen on
+  testnet 2 at 6054–6055). The miner now rebuilds its block 10 seconds after
+  new transactions arrive. Not consensus.
+- Test fix: `test_select_avoids_connected_groups` used a random address-manager
+  key, and about once in 250 runs two of its three addresses shared a slot,
+  so CI failed at random. It now uses a fixed key.
+- Fix: `kairos rpc ... | head` printed a BrokenPipeError traceback when the
+  reader stopped early.
+- `docs/rehearsal-testnet2.md` filled in: activation at 6048, Lamport sends
+  mined from 6054, a 600 KRS payment split into two transactions (61 inputs,
+  1.50 MB block, which reached all three seeds in the same second),
+  `getpqstats` over 6048–6085, and conclusions. Every observed
+  size matched the model to the byte. LAUNCH.md's rehearsal item is done.
 - Fix: a node syncing from several peers logged the same "new tip" up to
   once per peer. Peer threads compared the tip against the one they saw
   before their own submit, so a thread also reported tips another thread had

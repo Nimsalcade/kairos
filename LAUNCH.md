@@ -48,9 +48,12 @@ capable, because each one exists to catch mistakes its author cannot see.
 - [ ] Deliberate adversarial exercises: a reorg of 10+ blocks, a 51% attack
       by the organisers, mempool flooding, eclipse attempts, malformed-message
       floods, clock-skewed miners. Results published.
-- [ ] A rehearsal of the **quantum emergency**: activate the `pq` deployment
+- [x] A rehearsal of the **quantum emergency**: activate the `pq` deployment
       on testnet by miner signalling (`--signal pq`) and sweep coins with
-      Lamport signatures at scale. (Mechanism built in 0.4.0; rehearsal pending.)
+      Lamport signatures at scale. Done on testnet 2: locked in at 4032,
+      active at 6048, Lamport payments from block 6054, and a 61-coin payment
+      split into two transactions in one 1.50 MB block. Every size matched
+      the model. Report: `docs/rehearsal-testnet2.md`.
 - [ ] No consensus-affecting bug found in the final 90 days.
 
 ## Gate 4 — Still to design and build
