@@ -41,7 +41,16 @@ No consensus change.
   `wallet xpub` are new. Existing wallets keep their derivation unchanged.
   Verified against all official BIP32 (17 derivations, 16 invalid keys) and
   BIP39 (24) test vectors; RIPEMD-160 has a pure-Python fallback for Python
-  builds without it. The wallet file now encrypts seeds of any length.
+  builds without it.
+- HD wallet files use format 3, which 0.4.0 and 0.4.1 refuse to open. Their
+  secrets live under new field names, so an older version raises an error
+  instead of deriving legacy keys from the BIP39 seed and showing addresses
+  the HD wallet never scans. The encryption MAC also covers the key scheme
+  and account. Legacy wallets keep format 2, field for field, and still open
+  in 0.4.1 after 0.4.2 saves them. An HD file written by a pre-release build
+  in format 2 is rewritten as format 3 the first time it is opened. A test
+  runs the released 0.4.1 wallet module, frozen and checked against its git
+  blob, against every case.
 - Eclipse resistance: the address manager now follows Bitcoin Core's design.
   NEW and TRIED tables are split into buckets placed by a keyed hash with a
   secret per-node key. An address heard from a peer is placed by that peer's

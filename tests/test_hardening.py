@@ -147,21 +147,28 @@ class TestMergeMining(unittest.TestCase):
 
 class TestWalletSecurity(unittest.TestCase):
     def test_encryption_roundtrip_and_tamper(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "w.json")
-            w = Wallet.load_or_create(REGTEST, path, "correct horse battery")
-            with open(path) as f:
-                blob = f.read()
-            self.assertNotIn(w.seed.hex(), blob)
-            self.assertEqual(Wallet.load(REGTEST, path, "correct horse battery").seed, w.seed)
-            with self.assertRaises(PermissionError):
-                Wallet.load(REGTEST, path, "wrong passphrase!!")
-            d2 = json.loads(blob)
-            d2["ct"] = ("0" if d2["ct"][0] != "0" else "1") + d2["ct"][1:]
-            with open(path, "w") as f:
-                json.dump(d2, f)
-            with self.assertRaises(PermissionError):
-                Wallet.load(REGTEST, path, "correct horse battery")
+        for kind in ("legacy", "hd"):          # format 2 keeps ct at the top, format 3 under "hd"
+            with tempfile.TemporaryDirectory() as d:
+                path = os.path.join(d, "w.json")
+                if kind == "legacy":
+                    w = Wallet(REGTEST, path=path)
+                    w.passphrase = "correct horse battery"
+                    w.save()
+                else:
+                    w = Wallet.load_or_create(REGTEST, path, "correct horse battery")
+                with open(path) as f:
+                    blob = f.read()
+                self.assertNotIn(w.seed.hex(), blob)
+                self.assertEqual(Wallet.load(REGTEST, path, "correct horse battery").seed, w.seed)
+                with self.assertRaises(PermissionError):
+                    Wallet.load(REGTEST, path, "wrong passphrase!!")
+                d2 = json.loads(blob)
+                box = d2 if kind == "legacy" else d2["hd"]
+                box["ct"] = ("0" if box["ct"][0] != "0" else "1") + box["ct"][1:]
+                with open(path, "w") as f:
+                    json.dump(d2, f)
+                with self.assertRaises(PermissionError, msg=kind):
+                    Wallet.load(REGTEST, path, "correct horse battery")
 
     def test_backup_restore_and_typo_detection(self):
         with tempfile.TemporaryDirectory() as d:
