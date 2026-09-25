@@ -26,9 +26,15 @@ capable, because each one exists to catch mistakes its author cannot see.
 - [ ] **Cross-implementation consensus testing**: both clients run the same
       chain, replay the same fuzzed blocks, and agree on every accept/reject.
       Two implementations that disagree is a chain split waiting to happen.
-- [ ] Replace JSON-over-TCP with a binary protocol; add compact block relay
-      and DNS seeds, and a UTXO database (the reference node keeps the UTXO
-      set in memory; blocks are already on disk).
+- [x] Binary P2P framing negotiated after the handshake (0.4.2); JSON
+      remains for 0.4.0/0.4.1 peers.
+- [ ] Compact block relay, DNS seeds, encrypted transport (BIP324) and a
+      UTXO database (the reference node keeps the UTXO set in memory; blocks
+      are already on disk). These come with the production node.
+- [x] Consensus conformance vectors for a second implementation
+      (`tests/vectors/`, 0.4.2).
+- [x] Address-manager bucketing and outbound group diversity against
+      eclipse attacks (0.4.2).
 - [x] Headers-first sync and peer discovery (addr gossip): 0.3.0 / 0.4.0.
 
 ## Gate 3 — Public testnet (minimum 6 months)
@@ -51,13 +57,18 @@ capable, because each one exists to catch mistakes its author cannot see.
 
 - [x] Soft-fork activation mechanism (BIP8-style version bits, 0.4.0). The
       quantum switch is its first deployment.
-- [ ] Standard HD wallet derivation (BIP32-style) so hardware wallets and
-      other software can hold Kairos keys.
-- [ ] MuSig2 key aggregation for multi-party outputs.
+- [x] Standard HD wallet derivation: BIP39 words and BIP32 keys at
+      `m/44'/coin'/account'/0/i` (0.4.2). Still to do: register a SLIP-44
+      coin type, and hardware-wallet firmware that computes the post-quantum
+      key of each address.
+- [x] MuSig2 key aggregation, BIP327 (0.4.2). The post-quantum path of a
+      MuSig2 output is an open design question (see `kairos/musig.py`).
 - [x] UTXO snapshot export/import verified against the header commitment
       (0.4.0). Still to do: publish snapshots and their hashes with releases.
-- [ ] Final replacement of the Lamport path with a compact hash-based scheme
-      (e.g. SPHINCS+) if reviewers recommend it.
+- [ ] Final replacement of the Lamport path. Proposal with measured
+      options in `docs/pq-scaling.md`: commit-delay-reveal as the activated
+      rule, SLH-DSA-SHA2-128s as the fallback key, and versioned outputs, on
+      testnet 3.
 
 ## Gate 5 — Launch hygiene
 

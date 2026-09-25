@@ -1,7 +1,12 @@
 """
-Kairos peer-to-peer node (protocol 4).
+Kairos peer-to-peer node (protocol 5).
 
-Newline-delimited JSON over TCP. Every message carries the network magic.
+The handshake is one line of JSON each way. If both sides advertise
+"binary": 1 in their version (protocol 5), every later message is a binary
+frame (kairos/wire.py): raw blocks and transactions instead of hex, and
+per-command size limits checked before reading. With a 0.4 node, which
+advertises nothing, the whole conversation stays newline-delimited JSON, where
+every message carries the network magic. The messages are the same either way:
 
     version    {proto, genesis, height, nonce, agent, port}   first message, both ways
     inv        {blocks:[hash], txs:[txid]}              announce, never push
@@ -40,8 +45,9 @@ from .addrman import AddrMan, parse
 from .block import Block, mine
 from .chain import Chain, ValidationError
 from .tx import Transaction
+from . import wire
 
-PROTOCOL_VERSION = 4              # 0.4.0: testnet 2 (new sighash, soft-fork signalling)
+PROTOCOL_VERSION = 5              # binary frames after the handshake (0.4.2); 4 = JSON only
 MIN_PROTOCOL_VERSION = 4          # older nodes are on another chain; they are disconnected, not banned
 AGENT = "/kairos:0.4.1/"
 MAX_OUTBOUND = 8
@@ -100,6 +106,7 @@ class Peer:
         self.sync_pending = False
         self.unconnecting = 0         # headers batches that did not attach to our index
         self.inflight = set()         # block hashes we asked this peer for
+        self.binary = False           # both sides speak binary frames after the handshake
 
     @property
     def key(self):
@@ -113,8 +120,11 @@ class Peer:
         two nodes sending to each other at once can never deadlock."""
         if not self.alive:
             return
-        msg["magic"] = self.node.magic_hex
-        data = (json.dumps(msg) + "\n").encode()
+        if self.binary and msg.get("type") != "version":
+            data = wire.encode(self.node.chain.params.magic, msg)
+        else:
+            msg["magic"] = self.node.magic_hex
+            data = (json.dumps(msg) + "\n").encode()
         with self.wlock:
             if self.outbytes + len(data) > MAX_SEND_QUEUE:
                 overflow = True
@@ -161,9 +171,38 @@ class Peer:
         self.tokens -= 1
         return True
 
+    def _run_binary(self):
+        """Binary frames, once both sides have switched (see wire.py)."""
+        magic = self.node.chain.params.magic
+        while self.alive:
+            try:
+                frame = wire.read_frame(self.f, magic)
+            except EOFError:
+                return                # closed mid-frame (peer restarted): not an attack
+            except wire.FrameError as e:
+                self.node.misbehave(self, 100, f"malformed frame: {e}")
+                return                # the stream cannot be resynchronised
+            if frame is None:
+                return
+            command, payload = frame
+            self.last_recv = time.time()
+            solicited = command in ("block", "tx") and self.expected > 0
+            if solicited:
+                self.expected -= 1
+            elif not self._rate_ok():
+                self.node.misbehave(self, 100, "message flood")
+                return
+            try:
+                self.node._handle(self, wire.decode_payload(command, payload))
+            except Exception as e:                          # noqa: BLE001 - any failure is the peer's
+                self.node.misbehave(self, 100, f"malformed message: {type(e).__name__}: {e}")
+
     def run(self):
         try:
             while self.alive:
+                if self.binary:
+                    self._run_binary()
+                    break
                 line = self.f.readline(MAX_LINE + 1)
                 if not line:
                     break
@@ -195,8 +234,9 @@ class Peer:
 class Node:
     def __init__(self, chain: Chain, host="127.0.0.1", port=0, wallet=None, log=None,
                  name="node", max_inbound=MAX_INBOUND, max_outbound=MAX_OUTBOUND,
-                 use_seeds=True):
+                 use_seeds=True, binary=True):
         self.chain = chain
+        self.binary = binary          # offer binary frames (False behaves like a 0.4 node)
         self.wallet = wallet
         self.name = name
         self.log = log or (lambda *a: None)
@@ -222,6 +262,8 @@ class Node:
         self.queue = []               # blocks still to fetch on the best header chain, oldest first
         self.queue_for = None         # the best header the queue was computed for
         self.qlock = threading.Lock()
+        self._tiplog_lock = threading.Lock()
+        self._logged_tip = chain.tip  # last tip reported, so each new tip is logged once
         path = os.path.join(chain.datadir, "peers.json") if chain.datadir else None
         self.addrman = AddrMan(path, allow_private=chain.params.name == "regtest")
         threading.Thread(target=self._accept_loop, daemon=True).start()
@@ -267,7 +309,8 @@ class Node:
         # (tip announcement, sync request) ahead of it, and the peer bans us.
         p.send({"type": "version", "proto": PROTOCOL_VERSION,
                 "genesis": self.chain.genesis.hash.hex(), "height": self.chain.height,
-                "nonce": self.nonce, "agent": AGENT, "port": self.port})
+                "nonce": self.nonce, "agent": AGENT, "port": self.port,
+                **({"binary": 1} if self.binary else {})})
         with self.plock:
             self.peers.append(p)
         threading.Thread(target=p.writer, daemon=True).start()
@@ -384,17 +427,20 @@ class Node:
                 peer.close()
                 return
             peer.proto = proto
+            # Both sides switch to binary frames after the versions, or neither does.
+            # This must be decided before anything else is sent to this peer.
+            peer.binary = self.binary and proto >= 5 and msg.get("binary") == 1
             lp = msg.get("port")
             peer.listen_port = lp if isinstance(lp, int) and not isinstance(lp, bool) and 0 < lp < 65536 else 0
             peer.height = _int(msg.get("height", 0), 0, 1 << 32)
             peer.ready = True
             if peer.outbound and peer.addr_key:
                 h, p = parse(peer.addr_key)
-                self.addrman.add(h, p, manual=True)     # we reached it, so it is real
-                self.addrman.success(peer.addr_key)
+                self.addrman.add(h, p, verified=True)   # we reached it, so it is real
+                self.addrman.success(peer.addr_key)     # ...and it moves to the TRIED table
                 self.log(f"[{self.name}] connected to {peer.addr_key}")
             elif peer.listen_port:
-                self.addrman.add(peer.addr[0], peer.listen_port)
+                self.addrman.add(peer.addr[0], peer.listen_port, source=peer.addr[0])
             if peer.outbound:
                 peer.send({"type": "getaddr"})
             if peer.height > self.chain.best_header.height:
@@ -467,7 +513,6 @@ class Node:
                 if self.inflight.get(blk.hash, (None,))[0] is peer:
                     del self.inflight[blk.hash]
                 peer.inflight.discard(blk.hash)
-            before = self.chain.tip
             status = self.chain.submit_block(blk)
             if status in ("accepted", "stored"):
                 # Accepting one block can also connect waiting orphans behind it,
@@ -475,9 +520,7 @@ class Node:
                 # Don't re-announce every block of a download burst (that looks like a flood
                 # to our other peers). Announce the tip, at most twice a second; the final
                 # tip of a burst is always announced by the announcer thread.
-                if self.chain.tip is not before:
-                    self._tip_changed()
-                    self.log(f"[{self.name}] new tip {self.chain.height} {self.chain.tip.hash.hex()[:16]}")
+                self._note_tip()
                 peer.height = max(peer.height, blk.header.height)
                 self._fetch_blocks()
             elif status == "orphan":
@@ -518,13 +561,28 @@ class Node:
                     seen = _int(item[1])
                 except (ValueError, TypeError):
                     continue
-                self.addrman.add(host, port, seen=seen)
+                self.addrman.add(host, port, seen=seen, source=getattr(peer, "addr", (None,))[0])
         elif t in ("pong", "version"):
             pass
         # Unknown message types are ignored, so future versions can add messages
         # without older nodes banning them.
 
     # ------------------------------------------------------------ tip announcements
+    def _note_tip(self, mined=False) -> bool:
+        """Report the current tip once. Several peer threads submit blocks at the same
+        time, so comparing against the tip seen before our own submit would also report
+        tips that another thread produced; comparing against the last reported tip
+        does not."""
+        with self._tiplog_lock:
+            tip = self.chain.tip
+            if tip is self._logged_tip:
+                return False
+            self._logged_tip = tip
+        self._tip_changed()
+        if not mined:
+            self.log(f"[{self.name}] new tip {tip.height} {tip.hash.hex()[:16]}")
+        return True
+
     def _tip_changed(self):
         now = time.time()
         if now - self._last_announce >= 0.5:
@@ -594,12 +652,18 @@ class Node:
                     h, p = parse(seed)
                     self.addrman.add(h, p)
             tries = 0
+            # at most one outbound connection per network group (/16): an attacker
+            # must then control addresses in as many groups as we have peers
+            with self.plock:
+                groups = {self.addrman.group(p.key) for p in self.peers if p.outbound and p.key}
+            groups |= {self.addrman.group(k) for k in self.pending}
             while outbound < self.max_outbound and tries < 3:
-                key = self.addrman.select(exclude=busy | self.manual)
+                key = self.addrman.select(exclude=busy | self.manual, exclude_groups=groups)
                 if key is None:
                     break
                 self._start_dial(key)
                 busy.add(key)
+                groups.add(self.addrman.group(key))
                 outbound += 1
                 tries += 1
             if time.time() - last_save > 60:
@@ -652,7 +716,8 @@ class Node:
         self.broadcast_inv(txs=[tx.txid.hex()])
 
     def announce_block(self, blk: Block):
-        self._tip_changed()
+        if not self._note_tip(mined=True):
+            self._tip_changed()
 
     def mine_one(self, address=None, extra=b"") -> Block:
         while self.running:
@@ -660,7 +725,7 @@ class Node:
             start_tip = self.chain.tip
             if mine(blk.header, should_stop=lambda: self.chain.tip is not start_tip or not self.running):
                 if self.chain.submit_block(blk) == "accepted":
-                    self.announce_block(blk)
+                    self._note_tip(mined=True)
                     self.log(f"[{self.name}] mined block {blk.header.height} {blk.hash.hex()[:16]} "
                              f"({len(blk.txs) - 1} txs)")
                     return blk

@@ -10,7 +10,7 @@ from dataclasses import replace
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from kairos.addrman import AddrMan
+from kairos.addrman import AddrMan, parse
 from kairos.chain import Chain
 from kairos.node import Node
 from kairos.params import REGTEST, TESTNET
@@ -127,7 +127,7 @@ class TestDiscovery(unittest.TestCase):
             a.stop()
             chain.close()
             with open(os.path.join(d, "peers.json")) as f:
-                self.assertIn(f"127.0.0.1:{b.port}", json.load(f))
+                self.assertIn(f"127.0.0.1:{b.port}", json.load(f)["entries"])
 
 
 class TestProtocolFloor(unittest.TestCase):
@@ -175,3 +175,92 @@ class TestProtocolFloor(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestEclipseResistance(unittest.TestCase):
+    """The address manager limits what any one source or network group can
+    occupy, and never lets newcomers displace addresses that work."""
+
+    def addrs(self, first_octets, per=1, start=0):
+        out = []
+        for a in first_octets:
+            for i in range(per):
+                out.append(f"{a}.{(start + i) // 250 % 250 + 1}.{(start + i) % 250 + 1}.9")
+        return out
+
+    def test_one_source_fills_only_a_few_new_buckets(self):
+        from kairos import addrman as A
+        m = AddrMan(key=b"\x01" * 32)
+        honest = 0
+        for i, host in enumerate(self.addrs(range(1, 100), per=3)):
+            honest += m.add(host, 19333, source=f"{100 + i % 50}.{i % 7}.0.1")
+        # one attacker IP sends 20,000 addresses spread over 200 /16 groups
+        flood = [f"{11 + i % 200}.{i // 200 % 250}.{i % 250}.7" for i in range(20_000)]
+        for host in flood:
+            m.add(host, 19333, source="6.6.6.6")
+        buckets = {e["pos"][0] for k, e in m.entries.items() if e["src"] == m.group("6.6.6.6")}
+        self.assertLessEqual(len(buckets), A.NEW_BUCKETS_PER_SOURCE_GROUP)
+        attacker = sum(1 for e in m.entries.values() if e["src"] == m.group("6.6.6.6"))
+        self.assertLessEqual(attacker, A.NEW_BUCKETS_PER_SOURCE_GROUP * A.BUCKET_SIZE)
+        surviving = sum(1 for e in m.entries.values() if e["src"] != m.group("6.6.6.6"))
+        self.assertGreater(surviving, honest * 0.9)       # honest addresses are not washed out
+
+    def test_one_group_occupies_few_tried_buckets(self):
+        from kairos import addrman as A
+        m = AddrMan(key=b"\x02" * 32)
+        for i in range(2000):
+            host = f"66.66.{i // 250}.{i % 250 + 1}"
+            m.add(host, 19333, source=f"{i % 200 + 1}.1.1.1")
+            m.success(f"{host}:19333")
+        buckets = {e["pos"][0] for e in m.entries.values() if e["table"] == "tried"}
+        self.assertLessEqual(len(buckets), A.TRIED_BUCKETS_PER_GROUP)
+
+    def test_working_tried_address_is_not_displaced(self):
+        clock = [1_000_000.0]
+        m = AddrMan(key=b"\x03" * 32, now=lambda: clock[0])
+        m.add("8.8.8.8", 19333)
+        m.success("8.8.8.8:19333")
+        pos = m.entries["8.8.8.8:19333"]["pos"]
+        rival = next(f"8.8.{i // 250}.{i % 250}:19333" for i in range(1, 60000)
+                     if m._tried_pos(f"8.8.{i // 250}.{i % 250}:19333") == pos)
+        host, port = parse(rival)
+        clock[0] += 3600
+        m.add(host, port)
+        m.success(rival)
+        self.assertEqual(m.tried[pos], "8.8.8.8:19333")          # the proven peer keeps its place
+        self.assertEqual(m.entries[rival]["table"], "new")       # the newcomer waits in NEW
+        clock[0] += 8 * 86400                                    # a week without contact
+        m.success(rival)
+        self.assertEqual(m.tried[pos], rival)
+        self.assertEqual(m.entries["8.8.8.8:19333"]["table"], "new")   # demoted, not forgotten
+
+    def test_placement_depends_on_a_secret_key(self):
+        a, b = AddrMan(key=b"\x04" * 32), AddrMan(key=b"\x05" * 32)
+        hosts = [f"9.{i}.1.1:19333" for i in range(40)]
+        pa = [a._new_pos(h, "local") for h in hosts]
+        pb = [b._new_pos(h, "local") for h in hosts]
+        self.assertNotEqual(pa, pb)
+
+    def test_select_avoids_connected_groups(self):
+        m = AddrMan()
+        for h in ("8.8.1.1", "8.8.2.2", "9.9.1.1"):
+            m.add(h, 19333)
+        for _ in range(50):
+            self.assertEqual(m.select(exclude_groups={"8.8"}), "9.9.1.1:19333")
+        self.assertEqual(m.group("8.8.200.1"), "8.8")
+
+    def test_key_and_tables_survive_restart_and_old_files_load(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "peers.json")
+            m = AddrMan(path)
+            m.add("8.8.8.8", 19333, source="1.2.3.4")
+            m.add("9.9.9.9", 19333)
+            m.success("9.9.9.9:19333")
+            m.save()
+            m2 = AddrMan(path)
+            self.assertEqual(m2.key, m.key)
+            self.assertEqual(m2.entries["9.9.9.9:19333"]["table"], "tried")
+            self.assertEqual(m2.entries["8.8.8.8:19333"]["table"], "new")
+            with open(path, "w") as f:                          # a 0.4 peers.json
+                json.dump({"8.8.4.4:19333": {"seen": time.time(), "ok": 0, "self": False}}, f)
+            self.assertEqual(AddrMan(path).entries["8.8.4.4:19333"]["table"], "new")

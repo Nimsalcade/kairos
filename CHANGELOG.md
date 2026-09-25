@@ -1,5 +1,93 @@
 # Changelog
 
+## Unreleased
+
+No consensus change.
+
+- Fix: a node syncing from several peers logged the same "new tip" up to
+  once per peer. Peer threads compared the tip against the one they saw
+  before their own submit, so a thread also reported tips another thread had
+  produced. The node now reports each tip once. Logging only.
+- Binary P2P (protocol 5, `kairos/wire.py`): after the JSON version
+  handshake, two 0.4.2 nodes switch to binary frames (magic, command,
+  length, payload). Blocks, transactions and headers travel as raw bytes
+  instead of hex, which halves block traffic, and each frame's length is
+  checked against a per-command limit before its payload is read. With a
+  0.4.0 or 0.4.1 node the conversation stays JSON; interoperation was
+  checked in both directions against the released 0.4.1 code. Frames decode
+  into the same messages as JSON, so validation is one code path. Hostile
+  frames (bad magic, oversized lengths, garbage) earn a ban and never crash
+  the node. Encrypted transport (BIP324) is left to the production node.
+- MuSig2 (BIP327) in `kairos/musig.py`: key aggregation, tweaks, nonce
+  generation and aggregation, partial signing and verification, signature
+  aggregation, deterministic signing. It passes every official BIP327 test
+  vector. A MuSig2 output is an ordinary Kairos address whose Schnorr key is
+  the aggregate key, spent with one 64-byte signature; a test pays and spends
+  a 3-of-3 output on chain. No consensus change. Hash-based keys cannot be
+  aggregated, so a MuSig2 address must name its post-quantum root
+  explicitly: an unspendable root, which freezes the coins if the quantum
+  switch activates, or one party's Lamport root, which lets that party alone
+  move them after activation. The commit-delay-reveal rule proposed for
+  testnet 3 removes this trade-off. A secret nonce is wiped when it signs,
+  so it can never sign twice.
+- HD wallets: new wallets derive keys by BIP32 from BIP39 words at
+  `m/44'/coin'/0'/0/i` (coin 19282' on mainnet, pending SLIP-44
+  registration; 1' on test networks). A hardware wallet holding the same
+  words derives the same Schnorr keys: each Kairos key is the x-coordinate of
+  the standard BIP32 key at that path. Every address's post-quantum key is
+  derived from its private key, so an xpub alone cannot produce Kairos
+  addresses; watch-only software needs the addresses from the signer.
+  `wallet backup` shows the 24 words; `wallet restore "words..."` and
+  `wallet xpub` are new. Existing wallets keep their derivation unchanged.
+  Verified against all official BIP32 (17 derivations, 16 invalid keys) and
+  BIP39 (24) test vectors; RIPEMD-160 has a pure-Python fallback for Python
+  builds without it.
+- HD wallet files use format 3, which 0.4.0 and 0.4.1 refuse to open. Their
+  secrets live under new field names, so an older version raises an error
+  instead of deriving legacy keys from the BIP39 seed and showing addresses
+  the HD wallet never scans. The encryption MAC also covers the key scheme
+  and account. Legacy wallets keep format 2, field for field, and still open
+  in 0.4.1 after 0.4.2 saves them. An HD file written by a pre-release build
+  in format 2 is rewritten as format 3 the first time it is opened. A test
+  runs the released 0.4.1 wallet module, frozen and checked against its git
+  blob, against every case.
+- Eclipse resistance: the address manager now follows Bitcoin Core's design.
+  NEW and TRIED tables are split into buckets placed by a keyed hash with a
+  secret per-node key. An address heard from a peer is placed by that peer's
+  /16 as well as its own, so one source reaches at most 16 of 256 NEW buckets:
+  in a test, 20,000 addresses flooded from one IP kept 490 slots and
+  displaced none of 285 honest ones. An address that worked in the last week
+  keeps its TRIED slot against newcomers. Outbound connections go to at most
+  one peer per /16. `peers.json` gains the key and table (0.4 files still
+  load). `getnetworkinfo` reports table sizes.
+- New RPC `getpqstats [start end coins share]`: for a block range (default
+  the last 2016), post-quantum transaction sizes, inputs per transaction,
+  block fill and bytes per Lamport input as observed on chain; and for each
+  coin count, how many transactions, blocks and days a sweep takes, computed
+  from exact serialized sizes. Example:
+  `kairos --testnet rpc getpqstats 6048 6300 '[1000, 1000000]'`.
+- `docs/pq-scaling.md`: post-quantum scaling options compared with sizes
+  measured by `tools/pq_sizes.py` (real signatures for Lamport, compressed
+  Lamport, WOTS+, XMSS-style trees, SLH-DSA and ML-DSA; standard formulas
+  checked against FIPS 204/205 tables). Recommends commit-delay-reveal as the
+  rule the quantum switch enables, SLH-DSA-SHA2-128s as the fallback key, and
+  versioned outputs, all for testnet 3.
+- Consensus conformance vectors in `tests/vectors/`: 180 block-by-block
+  steps over 7 chains (every reachable rejection reason, reorg, orphan,
+  malformed data, ASERT, base fee, version-bits states, the quantum switch by
+  signalling and by flag day, merge-mining, checkpoints) and 228 function
+  cases (sighash, witnesses, MuHash, ASERT, base fee, auxpow and more).
+  `run.py --external CMD` checks another implementation step by step. CI
+  verifies the files are exactly what the generator produces and that seven
+  injected consensus bugs are each caught.
+- `docs/production-node-plan.md`: Bitcoin Core fork against Rust from
+  scratch, a component-by-component map of Kairos rules onto Core code, an
+  effort estimate (35–53 person-months for the fork), risks, and three
+  consensus changes to make on testnet 3 before the port freezes the rules.
+- `docs/rehearsal-testnet2.md`: report skeleton for the quantum-switch
+  rehearsal on testnet 2, with the timeline to lock-in at 4032 and the
+  measurement sections to fill after activation at 6048.
+
 ## 0.4.1 — post-quantum sends
 
 No consensus change: 0.4.1 runs on testnet 2 alongside 0.4.0 nodes.

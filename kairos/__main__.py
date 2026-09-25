@@ -5,7 +5,7 @@ kairos - command line
   python -m kairos demo
   python -m kairos [net] node [--connect host:port] [--mine] [--rpcport N]
   python -m kairos [net] rpc <method> [params...]
-  python -m kairos [net] wallet show|backup|encrypt|restore <code>
+  python -m kairos [net] wallet show|backup|encrypt|xpub|restore <code or "words">
   python -m kairos [net] utxo export|import <file>     (node must be running)
 """
 import argparse
@@ -77,7 +77,8 @@ def open_wallet(args, p):
         return Wallet.load_or_create(p, path)
     print("creating a new wallet (it will be encrypted)")
     w = Wallet.load_or_create(p, path, ask_passphrase(new=True))
-    print(f"\nBACKUP CODE - write it down, it restores all your coins:\n  {w.backup_code()}\n")
+    what = "RECOVERY WORDS (BIP39)" if w.scheme == "bip32" else "BACKUP CODE"
+    print(f"\n{what} - write it down, it restores all your coins:\n  {w.backup_code()}\n")
     return w
 
 
@@ -357,6 +358,10 @@ def cmd_wallet(args):
     elif args.action == "encrypt":
         w.encrypt(ask_passphrase(new=True))
         print("wallet encrypted")
+    elif args.action == "xpub":
+        print(w.xpub())
+        print("note: a Kairos address also commits to a post-quantum key that an xpub cannot derive; "
+              "watch-only software needs each address from this wallet", file=sys.stderr)
 
 
 def main(argv=None):
@@ -393,7 +398,7 @@ def main(argv=None):
     r.add_argument("method")
     r.add_argument("params", nargs="*")
     wl = sub.add_parser("wallet", parents=[common])
-    wl.add_argument("action", choices=["show", "backup", "encrypt", "restore"])
+    wl.add_argument("action", choices=["show", "backup", "encrypt", "restore", "xpub"])
     wl.add_argument("code", nargs="?")
     ux = sub.add_parser("utxo", parents=[common])
     ux.add_argument("action", choices=["export", "import"])

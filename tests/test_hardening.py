@@ -147,21 +147,28 @@ class TestMergeMining(unittest.TestCase):
 
 class TestWalletSecurity(unittest.TestCase):
     def test_encryption_roundtrip_and_tamper(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "w.json")
-            w = Wallet.load_or_create(REGTEST, path, "correct horse battery")
-            with open(path) as f:
-                blob = f.read()
-            self.assertNotIn(w.seed.hex(), blob)
-            self.assertEqual(Wallet.load(REGTEST, path, "correct horse battery").seed, w.seed)
-            with self.assertRaises(PermissionError):
-                Wallet.load(REGTEST, path, "wrong passphrase!!")
-            d2 = json.loads(blob)
-            d2["ct"] = ("0" if d2["ct"][0] != "0" else "1") + d2["ct"][1:]
-            with open(path, "w") as f:
-                json.dump(d2, f)
-            with self.assertRaises(PermissionError):
-                Wallet.load(REGTEST, path, "correct horse battery")
+        for kind in ("legacy", "hd"):          # format 2 keeps ct at the top, format 3 under "hd"
+            with tempfile.TemporaryDirectory() as d:
+                path = os.path.join(d, "w.json")
+                if kind == "legacy":
+                    w = Wallet(REGTEST, path=path)
+                    w.passphrase = "correct horse battery"
+                    w.save()
+                else:
+                    w = Wallet.load_or_create(REGTEST, path, "correct horse battery")
+                with open(path) as f:
+                    blob = f.read()
+                self.assertNotIn(w.seed.hex(), blob)
+                self.assertEqual(Wallet.load(REGTEST, path, "correct horse battery").seed, w.seed)
+                with self.assertRaises(PermissionError):
+                    Wallet.load(REGTEST, path, "wrong passphrase!!")
+                d2 = json.loads(blob)
+                box = d2 if kind == "legacy" else d2["hd"]
+                box["ct"] = ("0" if box["ct"][0] != "0" else "1") + box["ct"][1:]
+                with open(path, "w") as f:
+                    json.dump(d2, f)
+                with self.assertRaises(PermissionError, msg=kind):
+                    Wallet.load(REGTEST, path, "correct horse battery")
 
     def test_backup_restore_and_typo_detection(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1043,6 +1050,114 @@ class TestPostQuantumSpending(unittest.TestCase):
                 self.assertIn(r["result"], [t.hex() for t in chain.mempool])
                 node.mine_one()
                 self.assertEqual(bob.balance(chain)["spendable"], int(3.5 * COIN))
+            finally:
+                rpc.stop()
+                node.stop()
+
+
+class TestTipLogging(unittest.TestCase):
+    """Each new tip is logged once, even when several peer threads deliver blocks
+    at the same moment (the testnet log showed one height up to three times)."""
+
+    def test_tip_reported_once_when_threads_interleave(self):
+        import threading
+        from kairos.node import Peer
+        src, sclock = new_chain()
+        w = Wallet(src.params, seed=b"t" * 32)
+        blocks = [mine_block(src, sclock, w.mining_address) for _ in range(3)]
+        chain, clock = new_chain()
+        clock.t = sclock.t
+        for b in blocks:                              # headers first, bodies later
+            self.assertEqual(chain.submit_header(b.header), "accepted")
+        logs = []
+        node = Node(chain, use_seeds=False, log=logs.append)
+        pairs = [socket.socketpair() for _ in range(2)]
+        try:
+            a, b = (Peer(node, s[0], ("127.0.0.1", 1000 + i), False) for i, s in enumerate(pairs))
+            a.ready = b.ready = True
+            real = chain.submit_block
+            fired = threading.Event()
+
+            def interleaved(blk, *args, **kw):
+                # Peer b's block 3 arrives while peer a's block 1 connects: 3 has no
+                # parent data yet, so it is only stored and does not move the tip.
+                if blk.header.height == 3 and not fired.is_set():
+                    fired.set()
+                    node._handle(a, {"type": "block", "data": blocks[0].serialize().hex()})
+                return real(blk, *args, **kw)
+            chain.submit_block = interleaved
+            node._handle(b, {"type": "block", "data": blocks[2].serialize().hex()})
+            node._handle(a, {"type": "block", "data": blocks[1].serialize().hex()})
+            self.assertEqual(chain.height, 3)
+            tips = [line for line in logs if "new tip" in line]
+            heights = [int(line.split()[3]) for line in tips]
+            self.assertEqual(sorted(set(heights)), heights, tips)   # no height twice
+            self.assertEqual(heights[-1], 3)
+
+            # a block this node mined is reported as mined, never again as a new tip
+            logs.clear()
+            chain.submit_block = real
+            node.wallet = w
+            clock.t += 120
+            node.mine_one()
+            node._handle(a, {"type": "block", "data": chain.blocks.get(chain.tip.hash).serialize().hex()})
+            self.assertFalse([line for line in logs if "new tip" in line], logs)
+        finally:
+            node.running = False
+            node.srv.close()
+            for s in pairs:
+                s[0].close()
+                s[1].close()
+
+
+class TestPqStats(unittest.TestCase):
+    """The post-quantum measurement tool reports what the chain really contains,
+    and its sweep model agrees with the transactions the wallet really builds."""
+
+    def test_measure_and_sweep_model(self):
+        from kairos import pqstats
+        from kairos.rpc import RPCServer, call
+        chain, clock, w = TestPostQuantumSpending.activated(self, 48)
+        start = chain.height + 1
+        bob = Wallet(REGTEST, seed=b"b" * 32)
+        txs = w.create_txs(chain, bob.mining_address, w.balance(chain)["spendable"] - 5 * COIN)
+        for tx in txs:
+            chain.accept_tx(tx)
+        while chain.mempool:
+            mine_block(chain, clock, w.mining_address)
+        m = pqstats.measure(chain, start, chain.height)
+        self.assertEqual(m["pq_txs"]["count"], len(txs))
+        self.assertEqual(m["inputs"]["lamport"], sum(len(t.inputs) for t in txs))
+        self.assertEqual(m["pq_txs"]["max"], max(t.size for t in txs))
+        self.assertTrue(m["pq_active_at_end"])
+        # observed bytes per input = model plus the transaction's fixed overhead
+        self.assertGreaterEqual(m["observed_bytes_per_pq_input"], m["model_bytes_per_pq_input"])
+        self.assertLess(m["observed_bytes_per_pq_input"] - m["model_bytes_per_pq_input"], 200)
+        self.assertEqual(sum(b["pq_txs"] for b in m["blocks_with_pq_txs"]), len(txs))
+
+        # the size model is exact, not an estimate
+        sel = [(t.inputs[i].prev, None) for t in txs[:1] for i in range(len(t.inputs))]
+        self.assertEqual(pqstats.tx_size(len(sel), 2, pqstats.LAMPORT_WITNESS), w._size(sel, 2, 0, True))
+        n = pqstats.max_inputs(pqstats.MAX_TX_BYTES, 1, pqstats.LAMPORT_WITNESS)
+        self.assertLessEqual(pqstats.tx_size(n, 1, pqstats.LAMPORT_WITNESS), pqstats.MAX_TX_BYTES)
+        self.assertGreater(pqstats.tx_size(n + 1, 1, pqstats.LAMPORT_WITNESS), pqstats.MAX_TX_BYTES)
+        plan = pqstats.sweep_plan(REGTEST, 1_000_000)
+        self.assertLessEqual(plan["inputs_per_block"] * plan["bytes_per_input"], pqstats.block_room(REGTEST))
+        self.assertEqual(plan["blocks"], -(-1_000_000 // plan["inputs_per_block"]))
+        half = pqstats.sweep_plan(REGTEST, 1_000_000, share=0.5)
+        self.assertGreater(half["blocks"], plan["blocks"] * 1.9)
+
+        with tempfile.TemporaryDirectory() as d:
+            node = Node(chain, wallet=w, use_seeds=False)
+            rpc = RPCServer(node, d)
+            try:
+                r = call(d, rpc.port, "getpqstats", [start, chain.height, [100, 1000]])
+                self.assertIsNone(r["error"])
+                self.assertEqual(r["result"]["pq_txs"]["count"], len(txs))
+                self.assertEqual([s["coins"] for s in r["result"]["sweep"]], [100, 1000])
+                self.assertIsNone(call(d, rpc.port, "getpqstats", [])["error"])   # defaults
+                for bad in ([5, 1], [0, 1, 0], [0, 1, 10, 2.0], [0, 1, "x"]):
+                    self.assertIsNotNone(call(d, rpc.port, "getpqstats", bad)["error"], bad)
             finally:
                 rpc.stop()
                 node.stop()

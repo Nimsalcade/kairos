@@ -1,3 +1,7 @@
+# FROZEN COPY of kairos/wallet.py as released in Kairos 0.4.1 (git tag v0.4.1,
+# blob 159a9db742bbbf242a69ec1f1ec9b180d28f84bb). Only its four relative imports are rewritten as absolute
+# ones (see SUBSTITUTIONS in tests/test_wallet_compat.py, which checks the blob
+# hash). Never edit this file: it stands in for a 0.4.1 node reading wallet files.
 """
 Kairos wallet.
 
@@ -16,30 +20,25 @@ import json
 import os
 from typing import Dict, List, Optional
 
-from . import crypto as _crypto
-from . import hd as _hd
+from kairos import crypto as _crypto
 
-from .crypto import (tagged_hash, pubkey_from_seckey, schnorr_sign, lamport_keygen,
+from kairos.crypto import (tagged_hash, pubkey_from_seckey, schnorr_sign, lamport_keygen,
                      lamport_sign, pq_root, bech32m_encode, bech32m_decode, N,
                      LAMPORT_PUB_LEN, LAMPORT_SIG_LEN)
-from .params import ChainParams, COIN
-from .tx import (Transaction, TxIn, TxOut, OutPoint, make_address,
+from kairos.params import ChainParams, COIN
+from kairos.tx import (Transaction, TxIn, TxOut, OutPoint, make_address,
                  schnorr_witness, lamport_witness)
 
 GAP_LIMIT = 20
 
 
 class Key:
-    def __init__(self, seed: Optional[bytes], i: int, seckey: Optional[bytes] = None,
-                 pq_seed: Optional[bytes] = None):
-        if seckey is None:                     # legacy (0.4) derivation
-            ib = i.to_bytes(4, "big")
-            d = int.from_bytes(tagged_hash("Kairos/wallet/sk", seed + ib), "big") % (N - 1) + 1
-            seckey = d.to_bytes(32, "big")
-            pq_seed = tagged_hash("Kairos/wallet/pq", seed + ib)
-        self.seckey = seckey
+    def __init__(self, seed: bytes, i: int):
+        ib = i.to_bytes(4, "big")
+        d = int.from_bytes(tagged_hash("Kairos/wallet/sk", seed + ib), "big") % (N - 1) + 1
+        self.seckey = d.to_bytes(32, "big")
         self.pubkey = pubkey_from_seckey(self.seckey)
-        self._pq_seed = pq_seed
+        self._pq_seed = tagged_hash("Kairos/wallet/pq", seed + ib)
         self._lamport = None
         self.pqroot = pq_root(self.lamport[1])
         self.address = make_address(self.pubkey, self.pqroot)
@@ -53,23 +52,9 @@ class Key:
 
 class Wallet:
     def __init__(self, params: ChainParams, seed: Optional[bytes] = None,
-                 n_keys: int = 0, path: Optional[str] = None, scheme: str = "legacy",
-                 entropy: Optional[bytes] = None, account: int = 0):
-        """`scheme` "legacy" derives keys from a 32-byte seed as 0.4 did; "bip32"
-        derives them from a 64-byte BIP39 seed at m/44'/coin'/account'/0/i (see hd.py),
-        so hardware wallets holding the same mnemonic derive the same keys."""
-        if scheme not in ("legacy", "bip32"):
-            raise ValueError("unknown key scheme")
+                 n_keys: int = 0, path: Optional[str] = None):
         self.params = params
-        self.scheme = scheme
-        self.account = account
-        self.entropy = entropy           # BIP39 entropy, kept so the words can be shown again
-        self.seed = seed or os.urandom(32 if scheme == "legacy" else 64)
-        self._chain_key = None
-        if scheme == "bip32":
-            root = _hd.ExtKey.from_seed(self.seed)
-            self._account_key = root.derive_path(_hd.account_path(params.name, account))
-            self._chain_key = self._account_key.derive(0)
+        self.seed = seed or os.urandom(32)
         self.path = path
         self.passphrase = None
         self._enc = None             # (salt, derived key) cached so saves do not re-run scrypt
@@ -82,7 +67,7 @@ class Wallet:
             self._derive()
 
     # ------------------------------------------------------ persistence
-    # File format 2 (legacy wallets). The seed is encrypted with a passphrase-derived key:
+    # File format v2. The seed is encrypted with a passphrase-derived key:
     # scrypt(N=2^17, r=8, p=1) -> 64 bytes = encryption key || MAC key;
     # keystream = HMAC-SHA256(enc_key, nonce || counter) (a PRF in counter mode);
     # tag = HMAC-SHA256(mac_key, header || ciphertext) (encrypt-then-MAC).
@@ -103,148 +88,60 @@ class Wallet:
             ctr += 1
         return out[:n]
 
-    # File format 3 (HD wallets only). Format 2 is kept, unchanged, for legacy
-    # wallets, so 0.4.x can still open them. An HD wallet must never open in 0.4.1:
-    # that version ignores "scheme", would derive legacy keys from the BIP39 seed
-    # and show addresses the HD wallet never scans. So format 3 keeps every secret
-    # under "hd", where 0.4.1 does not look: its loader raises KeyError instead of
-    # deriving anything. The encryption MAC also covers the scheme and account.
-    FORMAT_LEGACY, FORMAT_HD = 2, 3
-
-    @staticmethod
-    def _hd_header(scheme: str, account: int, n: int, r: int, p: int, salt: bytes, nonce: bytes) -> bytes:
-        return f"kairos-wallet-3:{scheme}:{account}:{n}:{r}:{p}".encode() + salt + nonce
-
-    @classmethod
-    def _decrypt(cls, passphrase, salt, nonce, ct, tag, n, r, p, header):
-        """(plaintext, cached key or None). Raises PermissionError on a wrong passphrase."""
-        if passphrase is None:
-            raise PermissionError("wallet is encrypted: passphrase required")
-        k = cls._kdf(passphrase, salt, n, r, p)
-        if not hmac.compare_digest(hmac.new(k[32:], header + ct, hashlib.sha256).digest(), tag):
-            raise PermissionError("wrong passphrase or corrupted wallet file")
-        blob = bytes(a ^ b for a, b in zip(ct, cls._stream(k[:32], nonce, len(ct))))
-        return blob, ((salt, k) if (n, r, p) == (cls.KDF_N, cls.KDF_R, cls.KDF_P) else None)
-
     @classmethod
     def load(cls, params: ChainParams, path: str, passphrase: Optional[str] = None) -> "Wallet":
         with open(path) as f:
             d = json.load(f)
-        fmt = d.get("format", 2)
-        if not isinstance(fmt, int) or fmt > cls.FORMAT_HD:
-            raise ValueError(f"wallet file format {fmt} needs a newer version of Kairos")
-        scheme = d.get("scheme", "legacy")
-        account = d.get("account", 0)
         enc = None
-        if fmt >= cls.FORMAT_HD:
-            if scheme != "bip32":
-                raise ValueError(f"unknown key scheme {scheme!r} in wallet file")
-            h = d["hd"]
-            if d.get("encrypted"):
-                n, r, p = h["kdf"]
-                salt, nonce = bytes.fromhex(h["salt"]), bytes.fromhex(h["nonce"])
-                blob, enc = cls._decrypt(passphrase, salt, nonce, bytes.fromhex(h["ct"]), bytes.fromhex(h["tag"]),
-                                         n, r, p, cls._hd_header(scheme, account, n, r, p, salt, nonce))
-            else:
-                blob = bytes.fromhex(h["seed"]) + bytes.fromhex(h.get("entropy", ""))
-        elif d.get("encrypted"):
+        if d.get("encrypted"):
+            if passphrase is None:
+                raise PermissionError("wallet is encrypted: passphrase required")
             salt, nonce = bytes.fromhex(d["salt"]), bytes.fromhex(d["nonce"])
-            blob, enc = cls._decrypt(passphrase, salt, nonce, bytes.fromhex(d["ct"]), bytes.fromhex(d["tag"]),
-                                     d["n"], d["r"], d["p"], f"{d['n']}:{d['r']}:{d['p']}".encode() + salt + nonce)
+            ct, tag = bytes.fromhex(d["ct"]), bytes.fromhex(d["tag"])
+            k = cls._kdf(passphrase, salt, d["n"], d["r"], d["p"])
+            header = f"{d['n']}:{d['r']}:{d['p']}".encode() + salt + nonce
+            if not hmac.compare_digest(hmac.new(k[32:], header + ct, hashlib.sha256).digest(), tag):
+                raise PermissionError("wrong passphrase or corrupted wallet file")
+            seed = bytes(a ^ b for a, b in zip(ct, cls._stream(k[:32], nonce, len(ct))))
+            if (d["n"], d["r"], d["p"]) == (cls.KDF_N, cls.KDF_R, cls.KDF_P):
+                enc = (salt, k)
         else:
-            blob = bytes.fromhex(d["seed"]) + bytes.fromhex(d.get("entropy", ""))
-        n = 32 if scheme == "legacy" else 64
-        seed, entropy = blob[:n], blob[n:] or None
-        w = cls(params, seed, d["n_keys"], path, scheme=scheme, entropy=entropy, account=account)
+            seed = bytes.fromhex(d["seed"])
+        w = cls(params, seed, d["n_keys"], path)
         w.passphrase = passphrase
         w._enc = enc
         w.pq_revealed = set(d.get("pq_revealed", []))
         w.used = set(d.get("used", []))
-        if scheme != "legacy" and fmt < cls.FORMAT_HD:
-            w.save()            # an HD wallet written before format 3 existed: 0.4.1 must refuse it
         return w
 
     @classmethod
     def load_or_create(cls, params: ChainParams, path: str, passphrase: Optional[str] = None) -> "Wallet":
-        """Existing wallets keep their scheme; new ones are BIP39/BIP32 wallets."""
         if os.path.exists(path):
             return cls.load(params, path, passphrase)
-        w, _ = cls.create_hd(params, path, passphrase=passphrase)
-        return w
-
-    @classmethod
-    def create_hd(cls, params: ChainParams, path: Optional[str] = None, words: int = 24,
-                  passphrase: Optional[str] = None, n_keys: int = 0):
-        """A new BIP39/BIP32 wallet. Returns (wallet, mnemonic)."""
-        strength = {12: 16, 15: 20, 18: 24, 21: 28, 24: 32}[words]
-        entropy = os.urandom(strength)
-        mnemonic = _hd.entropy_to_mnemonic(entropy)
-        w = cls(params, _hd.mnemonic_to_seed(mnemonic), n_keys, path, scheme="bip32", entropy=entropy)
-        w.passphrase = passphrase
-        w.save()
-        return w, mnemonic
-
-    @classmethod
-    def restore_mnemonic(cls, params: ChainParams, mnemonic: str, path: Optional[str] = None,
-                         bip39_passphrase: str = "", passphrase: Optional[str] = None,
-                         n_keys: int = GAP_LIMIT) -> "Wallet":
-        """Restore from BIP39 words (the checksum catches a wrong word). The same
-        words on a hardware wallet give the same keys."""
-        entropy = _hd.mnemonic_to_entropy(mnemonic)
-        seed = _hd.mnemonic_to_seed(" ".join(mnemonic.split()), bip39_passphrase)
-        w = cls(params, seed, n_keys, path, scheme="bip32",
-                entropy=None if bip39_passphrase else entropy)
+        w = cls(params, path=path)
         w.passphrase = passphrase
         w.save()
         return w
-
-    def xpub(self) -> str:
-        """The account's extended public key. It identifies the Schnorr keys but
-        cannot produce addresses on its own: every address also commits to a
-        post-quantum key that only the seed can derive (see hd.py)."""
-        if self.scheme != "bip32":
-            raise ValueError("legacy wallets have no BIP32 keys")
-        net = "main" if self.params.name == "main" else "test"
-        return self._account_key.neuter().serialize(net)
 
     def save(self):
         if not self.path:
             return
-        d = {"format": self.FORMAT_LEGACY, "network": self.params.name, "n_keys": len(self.keys),
+        d = {"format": 2, "network": self.params.name, "n_keys": len(self.keys),
              "pq_revealed": sorted(self.pq_revealed), "used": sorted(self.used)}
-        encrypt = bool(getattr(self, "passphrase", None))
-        if encrypt:
+        if getattr(self, "passphrase", None):
             n, r, p = self.KDF_N, self.KDF_R, self.KDF_P
             if self._enc is None:
                 salt = os.urandom(16)
                 self._enc = (salt, self._kdf(self.passphrase, salt, n, r, p))
             salt, k = self._enc
             nonce = os.urandom(16)
-        if self.scheme == "legacy":
-            # exactly what 0.4.1 writes, so 0.4.1 keeps opening legacy wallets
-            if encrypt:
-                ct = bytes(a ^ b for a, b in zip(self.seed, self._stream(k[:32], nonce, len(self.seed))))
-                header = f"{n}:{r}:{p}".encode() + salt + nonce
-                tag = hmac.new(k[32:], header + ct, hashlib.sha256).digest()
-                d.update(encrypted=True, n=n, r=r, p=p, salt=salt.hex(), nonce=nonce.hex(),
-                         ct=ct.hex(), tag=tag.hex())
-            else:
-                d.update(encrypted=False, seed=self.seed.hex())
+            ct = bytes(a ^ b for a, b in zip(self.seed, self._stream(k[:32], nonce, 32)))
+            header = f"{n}:{r}:{p}".encode() + salt + nonce
+            tag = hmac.new(k[32:], header + ct, hashlib.sha256).digest()
+            d.update(encrypted=True, n=n, r=r, p=p, salt=salt.hex(), nonce=nonce.hex(),
+                     ct=ct.hex(), tag=tag.hex())
         else:
-            d.update(format=self.FORMAT_HD, scheme=self.scheme, account=self.account,
-                     note="HD wallet (BIP39/BIP32): needs Kairos 0.4.2 or later. Older versions refuse it.")
-            blob = self.seed + (self.entropy or b"")
-            if encrypt:
-                ct = bytes(a ^ b for a, b in zip(blob, self._stream(k[:32], nonce, len(blob))))
-                header = self._hd_header(self.scheme, self.account, n, r, p, salt, nonce)
-                tag = hmac.new(k[32:], header + ct, hashlib.sha256).digest()
-                d.update(encrypted=True, hd={"kdf": [n, r, p], "salt": salt.hex(), "nonce": nonce.hex(),
-                                             "ct": ct.hex(), "tag": tag.hex()})
-            else:
-                hd = {"seed": self.seed.hex()}
-                if self.entropy:
-                    hd["entropy"] = self.entropy.hex()
-                d.update(encrypted=False, hd=hd)
+            d.update(encrypted=False, seed=self.seed.hex())
         tmp = self.path + ".tmp"
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
@@ -262,20 +159,12 @@ class Wallet:
 
     # ------------------------------------------------------ backup
     def backup_code(self) -> str:
-        """What to write down. BIP32 wallets: the BIP39 words. Legacy wallets: the
-        seed as bech32m. Either way a typo is detected on restore."""
-        if self.scheme == "bip32":
-            if not self.entropy:
-                raise ValueError("this wallet was restored with a BIP39 passphrase: its backup is the "
-                                 "words you restored from, plus that passphrase")
-            return _hd.entropy_to_mnemonic(self.entropy)
+        """Seed as bech32m: any single typo is detected on restore."""
         return bech32m_encode("krsseed", self.seed)
 
     @classmethod
     def restore(cls, params: ChainParams, code: str, path: str, n_keys: int = GAP_LIMIT,
                 passphrase: Optional[str] = None) -> "Wallet":
-        if len(code.split()) > 1:                         # BIP39 words
-            return cls.restore_mnemonic(params, code, path, passphrase=passphrase, n_keys=n_keys)
         seed = bech32m_decode("krsseed", code.strip())
         if len(seed) != 32:
             raise ValueError("bad backup code")
@@ -286,12 +175,7 @@ class Wallet:
 
     # ------------------------------------------------------ addresses
     def _derive(self) -> Key:
-        i = len(self.keys)
-        if self.scheme == "bip32":
-            child = self._chain_key.derive(i)
-            k = Key(None, i, child.secret, _hd.pq_seed(child.secret))
-        else:
-            k = Key(self.seed, i)
+        k = Key(self.seed, len(self.keys))
         self.keys.append(k)
         self.by_addr[k.address] = k
         return k
