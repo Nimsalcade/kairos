@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from kairos.crypto import (lamport_keygen, lamport_sign, lamport_verify, pq_root, tagged_hash,
                            LAMPORT_PUB_LEN, LAMPORT_SIG_LEN)
-from kairos.params import TESTNET
+from kairos.params import TESTNET2
 from kairos import pqstats
 
 SCHNORR_PK = 32           # every Kairos witness reveals the Schnorr key the address commits to
@@ -200,7 +200,7 @@ def witness_row(name, pq_pk, sig, how, note=""):
     return {"name": name, "pq_pk": pq_pk, "sig": sig, "witness": wit, "how": how, "note": note}
 
 
-def capacity(rows, params=TESTNET):
+def capacity(rows, params=TESTNET2):
     for r in rows:
         r["input"] = pqstats.input_bytes(r["witness"])
         one = pqstats.sweep_plan(params, 1_000_000, witness_len=r["witness"])
@@ -295,7 +295,7 @@ def measure(quick=False):
     return capacity(rows)
 
 
-def commit_reveal_rows(params=TESTNET):
+def commit_reveal_rows(params=TESTNET2):
     """Commit-delay-reveal: coins whose Schnorr key has never been revealed move
     with an ordinary Schnorr witness, authorised by a 32-byte commitment mined
     earlier. Worst case one commitment per coin; best case one per transaction."""

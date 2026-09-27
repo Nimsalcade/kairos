@@ -103,7 +103,7 @@ class Block:
                 + b"".join(t.serialize() for t in self.txs))
 
     @classmethod
-    def deserialize(cls, b: bytes) -> "Block":
+    def deserialize(cls, b: bytes, rules: int = 1) -> "Block":
         if len(b) < HEADER_SIZE:
             raise ValueError("block too short")
         f = io.BytesIO(b)
@@ -112,7 +112,7 @@ class Block:
         n = read_varint(f)
         if n > 100_000:
             raise ValueError("too many transactions")
-        txs = [Transaction.deserialize(f) for _ in range(n)]
+        txs = [Transaction.deserialize(f, rules) for _ in range(n)]
         if f.read(1):
             raise ValueError("trailing data")
         return cls(header, txs, aux)
@@ -139,9 +139,15 @@ def mine(header: BlockHeader, max_tries: int = 1 << 62, should_stop=None) -> boo
 
 def genesis_block(params: ChainParams) -> Block:
     # The genesis output pays to the all-zero address: nobody can spend it.
-    cb = make_coinbase(0, [TxOut(0, NULL_HASH)], GENESIS_MESSAGE)
-    from .crypto import MuHash
-    hdr = BlockHeader(VERSION_BASE, 0, NULL_HASH, b"", MuHash().digest(), params.genesis_time,
+    # It is never added to the UTXO set.
+    from .crypto import MuHash, MuHash3072
+    if params.rules == 1:
+        cb = make_coinbase(0, [TxOut(0, NULL_HASH)], GENESIS_MESSAGE)
+        empty = MuHash().digest()
+    else:
+        cb = make_coinbase(0, [TxOut(0, b"\x00" + NULL_HASH)], GENESIS_MESSAGE, version=2)
+        empty = MuHash3072().digest()
+    hdr = BlockHeader(VERSION_BASE, 0, NULL_HASH, b"", empty, params.genesis_time,
                       params.genesis_bits, params.min_base_fee, params.genesis_nonce)
     blk = Block(hdr, [cb])
     hdr.tx_root = blk.compute_tx_root()

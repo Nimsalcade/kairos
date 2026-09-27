@@ -49,7 +49,7 @@ from . import wire
 
 PROTOCOL_VERSION = 5              # binary frames after the handshake (0.4.2); 4 = JSON only
 MIN_PROTOCOL_VERSION = 4          # older nodes are on another chain; they are disconnected, not banned
-AGENT = "/kairos:0.4.1/"
+AGENT = "/kairos:0.5.0/"
 MAX_OUTBOUND = 8
 MAX_ADDR_PER_MSG = 1000
 CONNMAN_INTERVAL = 2
@@ -342,9 +342,24 @@ class Node:
                 self.banned[peer.addr[0]] = time.time() + BAN_SECONDS
             peer.close()
 
+    def wallet_tick(self):
+        """Broadcast what the wallet's commit-delay-reveal payments need now: an
+        unmined commitment, or a reveal whose commitment is old enough."""
+        w = self.wallet
+        if w is None or not getattr(w, "pending", None):
+            return
+        with self.chain.lock:
+            due = [tx for tx in w.due_reveals(self.chain) if tx.txid not in self.chain.mempool]
+        for tx in due:
+            try:
+                self.submit_tx(tx)
+            except ValidationError:
+                pass                     # not valid yet (or already mined): try again later
+
     def _maintenance_loop(self):
         while self.running:
             time.sleep(5)
+            self.wallet_tick()
             now = time.time()
             for p in list(self.peers):
                 if not p.ready and now - p.connected_at > HANDSHAKE_TIMEOUT:
@@ -482,7 +497,7 @@ class Node:
                 raise ValueError("bad headers list")
             last = None
             for hx in items:
-                blk = Block.deserialize(bytes.fromhex(hx))
+                blk = Block.deserialize(bytes.fromhex(hx), self.chain.params.rules)
                 if blk.txs:
                     raise ValueError("headers message carries transactions")
                 status = self.chain.submit_header(blk.header, blk.auxpow)
@@ -507,7 +522,7 @@ class Node:
                 self._request_headers(peer)          # there is more where that came from
             self._fetch_blocks()
         elif t == "block":
-            blk = Block.deserialize(bytes.fromhex(msg["data"]))
+            blk = Block.deserialize(bytes.fromhex(msg["data"]), self.chain.params.rules)
             h = blk.hash.hex()
             peer.known.add(h)
             with self.qlock:
@@ -531,7 +546,7 @@ class Node:
                 # a future timestamp may become valid later; everything else is provably bad
                 self.misbehave(peer, 0 if "future" in reason else 100, f"invalid block: {reason}")
         elif t == "tx":
-            tx = Transaction.deserialize(bytes.fromhex(msg["data"]))
+            tx = Transaction.deserialize(bytes.fromhex(msg["data"]), self.chain.params.rules)
             peer.known.add(tx.txid.hex())
             try:
                 if self.chain.accept_tx(tx):

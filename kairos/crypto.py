@@ -275,6 +275,65 @@ class MuHash:
         return tagged_hash("Kairos/utxoset", self.value().to_bytes(384, "little"))
 
 
+# ------------------------------------------- ChaCha20 and Core's MuHash3072
+# Rules-2 networks commit to the UTXO set with Bitcoin Core's MuHash3072
+# exactly (src/crypto/muhash.cpp): an element is SHA-256 of the data, used as
+# a ChaCha20 key whose first 384 bytes of keystream (nonce 0, counter 0) are
+# read as a little-endian number; the digest is SHA-256 of the 384-byte
+# little-endian value. A port can then use Core's audited class unchanged.
+# Kairos separates its elements from other uses by a prefix in the data
+# (see chain.py), not by changing the construction.
+
+def _qr(x, a, b, c, d):
+    x[a] = (x[a] + x[b]) & 0xFFFFFFFF; x[d] ^= x[a]; x[d] = ((x[d] << 16) | (x[d] >> 16)) & 0xFFFFFFFF
+    x[c] = (x[c] + x[d]) & 0xFFFFFFFF; x[b] ^= x[c]; x[b] = ((x[b] << 12) | (x[b] >> 20)) & 0xFFFFFFFF
+    x[a] = (x[a] + x[b]) & 0xFFFFFFFF; x[d] ^= x[a]; x[d] = ((x[d] << 8) | (x[d] >> 24)) & 0xFFFFFFFF
+    x[c] = (x[c] + x[d]) & 0xFFFFFFFF; x[b] ^= x[c]; x[b] = ((x[b] << 7) | (x[b] >> 25)) & 0xFFFFFFFF
+
+
+def chacha20_block(key: bytes, counter: int, nonce: bytes = b"\x00" * 12) -> bytes:
+    """One 64-byte ChaCha20 block (RFC 8439 section 2.3)."""
+    import struct
+    state = [0x61707865, 0x3320646E, 0x79622D32, 0x6B206574, *struct.unpack("<8I", key),
+             counter & 0xFFFFFFFF, *struct.unpack("<3I", nonce)]
+    x = list(state)
+    for _ in range(10):
+        _qr(x, 0, 4, 8, 12); _qr(x, 1, 5, 9, 13); _qr(x, 2, 6, 10, 14); _qr(x, 3, 7, 11, 15)
+        _qr(x, 0, 5, 10, 15); _qr(x, 1, 6, 11, 12); _qr(x, 2, 7, 8, 13); _qr(x, 3, 4, 9, 14)
+    return struct.pack("<16I", *((a + b) & 0xFFFFFFFF for a, b in zip(x, state)))
+
+
+def chacha20_keystream(key: bytes, n: int, counter: int = 0, nonce: bytes = b"\x00" * 12) -> bytes:
+    out = b"".join(chacha20_block(key, counter + i, nonce) for i in range((n + 63) // 64))
+    return out[:n]
+
+
+def muhash3072_element(data: bytes) -> int:
+    return int.from_bytes(chacha20_keystream(sha256(data), 384), "little")
+
+
+class MuHash3072:
+    """Bitcoin Core's MuHash3072, same interface as MuHash above."""
+
+    def __init__(self, value: int = 1):
+        self.num = value
+        self.den = 1
+
+    def insert(self, data: bytes):
+        self.num = self.num * muhash3072_element(data) % MUHASH_P
+
+    def remove(self, data: bytes):
+        self.den = self.den * muhash3072_element(data) % MUHASH_P
+
+    def value(self) -> int:
+        v = self.num * pow(self.den, -1, MUHASH_P) % MUHASH_P
+        self.num, self.den = v, 1
+        return v
+
+    def digest(self) -> bytes:
+        return sha256(self.value().to_bytes(384, "little"))
+
+
 # ----------------------------------------------------------- Merkle trees
 # Leaves and inner nodes use different tags, and an odd node is promoted
 # rather than duplicated. Together these remove Bitcoin's CVE-2012-2459

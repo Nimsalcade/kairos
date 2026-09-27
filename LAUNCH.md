@@ -1,6 +1,6 @@
 # Kairos mainnet launch gate
 
-Kairos 0.4.0 is **release-candidate software for a public testnet.** It is not yet
+Kairos 0.5.0 is **release-candidate software for a public testnet.** It is not yet
 fit to hold real value. This file is the checklist that decides when it is.
 Every item must be complete, with evidence published, before a mainnet
 genesis is announced. None of them can be skipped by a single author, however
@@ -11,8 +11,10 @@ capable, because each one exists to catch mistakes its author cannot see.
 - [ ] **Consensus audit** by at least two independent firms with blockchain
       consensus experience. Scope: `params.py`, `tx.py`, `block.py`,
       `auxpow.py`, `chain.py`. All high/critical findings fixed and re-reviewed.
-- [ ] **Cryptography review** of the dual-key address scheme, the Lamport
-      emergency path, the MuHash commitment, and the wallet encryption format.
+- [ ] **Cryptography review** of the dual-key address scheme, the SLH-DSA
+      implementation (`kairos/slhdsa.py`, checked against NIST's ACVP vectors),
+      commit-delay-reveal (`docs/rules-v2.md`), the MuHash commitment, and the
+      wallet encryption format.
 - [ ] **Economic review** of emission, tail, base-fee burn and fee-sniping
       incentives by someone who did not design them.
 - [ ] **Public bug bounty** running for the whole testnet period, with a
@@ -39,8 +41,12 @@ capable, because each one exists to catch mistakes its author cannot see.
 
 ## Gate 3 — Public testnet (minimum 6 months)
 
-- [ ] Testnet (`--testnet`) running continuously with independent operators
-      on at least three continents.
+- [ ] Testnet 3 (`--testnet`, rules 2, 0.5.0) running continuously with
+      independent operators on at least three continents. The six months
+      count from testnet 3, since it carries the rules mainnet launches with.
+- [ ] A rehearsal of the quantum emergency on testnet 3: activate `pq`,
+      then move coins by commit-delay-reveal and by SLH-DSA, and measure. The
+      testnet 2 procedure applies (`docs/rehearsal-testnet2.md`).
 - [ ] **Merge-mining verified with real pool software** against the
       `createauxblock` / `submitauxblock` interface. The auxpow format follows
       Namecoin's layout, but byte-level compatibility is only proven by a
@@ -68,10 +74,14 @@ capable, because each one exists to catch mistakes its author cannot see.
       MuSig2 output is an open design question (see `kairos/musig.py`).
 - [x] UTXO snapshot export/import verified against the header commitment
       (0.4.0). Still to do: publish snapshots and their hashes with releases.
-- [ ] Final replacement of the Lamport path. Proposal with measured
-      options in `docs/pq-scaling.md`: commit-delay-reveal as the activated
-      rule, SLH-DSA-SHA2-128s as the fallback key, and versioned outputs, on
-      testnet 3.
+- [x] Final replacement of the Lamport path (0.5.0, rules 2, testnet 3):
+      commit-delay-reveal as the activated rule, an SLH-DSA-SHA2-128s key in
+      every address, versioned outputs so later schemes arrive as soft forks,
+      and Bitcoin Core's MuHash3072. Spec: `docs/rules-v2.md`. Still open:
+      whether commitments should expire, and the value of `reveal_delay`
+      (100 blocks) after review.
+- [x] Consensus changes that must precede the Core port
+      (`docs/production-node-plan.md` section 5): all three are in rules 2.
 
 ## Gate 5 — Launch hygiene
 

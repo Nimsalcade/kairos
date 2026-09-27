@@ -29,11 +29,13 @@ from kairos.block import Block, BlockHeader, VERSION_AUXPOW, genesis_block, mine
 from kairos.chain import Chain, UtxoView, ValidationError, coin_bytes, Coin  # noqa: E402
 from kairos.crypto import (MuHash, lamport_sign, merkle_root, schnorr_sign, sha256d,  # noqa: E402
                            tagged_hash, bech32m_encode, pq_root, lamport_keygen)
-from kairos.params import (MAX_MONEY, REGTEST, asert_target, bits_to_target, next_base_fee,  # noqa: E402
+from kairos.params import (MAX_MONEY, REGTEST, REGTEST2, asert_target, bits_to_target, next_base_fee,  # noqa: E402
                            subsidy, target_to_bits, generated_at, Deployment)
 from kairos.tx import (OutPoint, Transaction, TxIn, TxOut, lamport_witness, make_address,  # noqa: E402
-                       make_coinbase, schnorr_witness, verify_witness)
-from kairos.wallet import Key  # noqa: E402
+                       make_coinbase, schnorr_witness, verify_witness, verify_witness2, slhdsa_witness,
+                       commit_script, spend_commitment, make_script, slh_leaf)
+from kairos.wallet import Key, Wallet  # noqa: E402
+from kairos import slhdsa  # noqa: E402
 
 SEED = b"Kairos conformance vectors v1...."
 
@@ -155,7 +157,7 @@ class Scenario:
             except (ValidationError, KeyError):
                 pass
         cb = make_coinbase(height, [TxOut(subsidy(p, parent.generated) + tips + cb_delta, self.next_addr())],
-                           extra or b"vec")
+                           extra or b"vec", 2 if p.rules >= 2 else 1)
         c.apply_tx(cb, view, height)
         root, _ = c.utxo_digest(parent.muhash, view)
         tm = t if t is not None else max(self.clock.t, c.median_time_past(parent) + 1)
@@ -191,7 +193,7 @@ class Scenario:
         assert status == expect, f"{self.name}: {note}: got {status!r}, expected {expect!r}"
         if adopt and status == "accepted" and not isinstance(blk_or_hex, str):
             if blk_or_hex.header.prev_hash == self.b.tip.hash:
-                assert self.b.submit_block(Block.deserialize(bytes.fromhex(hexs))) == "accepted"
+                assert self.b.submit_block(Block.deserialize(bytes.fromhex(hexs), self.params.rules)) == "accepted"
         rec = {"note": note, "now": self.clock.t, "block": hexs, "expect": expect}
         rec.update(observe(self.s))
         self.steps.append(rec)
@@ -220,6 +222,34 @@ class Scenario:
         with open(os.path.join(CHAINS, self.name + ".json"), "w") as f:
             json.dump(out, f, indent=1)
             f.write("\n")
+
+
+class Scenario2(Scenario):
+    """A scenario on a rules-2 network: Schnorr + SLH-DSA keys, version-2 transactions."""
+
+    def __init__(self, name, params, description, t0=None):
+        super().__init__(name, params, description, t0)
+        self.keys = Wallet(params, seed=SEED, n_keys=400).keys     # addresses are not reused
+        self.by_addr = {k.address: k for k in self.keys}
+
+    def sign(self, tx, coins, pq=False, chain_id=None, spent=None, keys=None):
+        sh = tx.sighash(chain_id or self.params.chain_id, spent or [(c.value, c.address) for _, c in coins])
+        slh_sig = None
+        for n, (inp, (_, coin)) in enumerate(zip(tx.inputs, coins)):
+            k = keys[n] if keys else self.by_addr[coin.address]
+            if pq:
+                slh_sig = slh_sig or slhdsa.sign(sh, k.slh_sk)
+                inp.witness = slhdsa_witness(k.pubkey, k.slh_pk, k.salt, slh_sig)
+            else:
+                inp.witness = schnorr_witness(k.pubkey, k.pqroot, schnorr_sign(sh, k.seckey, aux_rand(k.seckey, sh)))
+        tx.invalidate()
+        return tx
+
+    def pay(self, coins, outs=None, version=2, **kw):
+        return super().pay(coins, outs, version=version, **kw)
+
+    def commitment_for(self, tx):
+        return spend_commitment(tx.txid, [i.witness[1:33] for i in tx.inputs])
 
 
 # ------------------------------------------------------------ scenarios
@@ -703,16 +733,137 @@ def functions():
     v["auxpow"] = aux
     v["aux_slot"] = [{"nonce": n, "chain_id": c, "height": ht, "index": expected_index(n, c, ht)}
                      for n in (0, 1, 7, 0xFFFFFFFF) for c in (0x4B52, 1) for ht in (0, 3, 5)]
+    v["rules2"] = rules2_functions()
     g = genesis_block(REGTEST)
     v["genesis"] = [{"network": name, "block": genesis_block(pp).serialize().hex(), "hash": genesis_block(pp).hash.hex()}
-                    for name, pp in (("regtest", REGTEST),)]
+                    for name, pp in (("regtest", REGTEST), ("regtest2", REGTEST2))]
     assert g.hash.hex() == v["genesis"][0]["hash"]
     with open(FUNCTIONS, "w") as f:
         json.dump(v, f, indent=1)
         f.write("\n")
 
 
-SCENARIOS = (core, limits, asert, softfork, flagday, auxpow, checkpoints)
+def rules2():
+    """Rules 2: versioned outputs, SLH-DSA and commit-delay-reveal."""
+    p = replace(REGTEST2, deployments=(Deployment("pq", 16, 0, 0, 8, 6),), reveal_delay=5)
+    s = Scenario2("rules2", p, "Rules 2 (testnet 3, mainnet) on a regtest with 8-block windows and "
+                               "reveal_delay 5: output versions, spend commitments and their records, "
+                               "and commit-delay-reveal once the quantum switch 'pq' activates at 16.")
+    sig = 1 << 16
+    for i in range(3):
+        s.valid(note=f"mine block {i + 1}", version=1 | sig)
+    s.valid([s.pay([s.coins()[0]], [(10 ** 8, s.next_addr())])], note="Schnorr spend, transaction version 2",
+            version=1 | sig)
+    s.invalid("invalid: unknown tx version", "transaction version 1", [s.pay([s.coins()[0]], version=1)],
+              version=1 | sig)
+    s.invalid("invalid: unknown output version", "output version 0x81",
+              [s.pay([s.coins()[0]], [(10 ** 8, b"\x81" + b"\x00" * 32)])], version=1 | sig)
+    s.invalid("invalid: commitment output must have value 0", "commitment output with value 1",
+              [s.pay([s.coins()[0]], [(1, commit_script(b"\x11" * 32))])], version=1 | sig)
+    # Two coins at one address: A. The first spend of A reveals its key.
+    a = s.keys[399].address
+    s.valid([s.pay([s.coins()[0]], [(3 * 10 ** 8, a), (3 * 10 ** 8, a)])], note="two coins to one address",
+            version=1 | sig)
+    at_a = sorted(((op, c) for op, c in s.b.utxos.items() if c.address == a), key=lambda x: (x[0].txid, x[0].index))
+    # A planned payment R1 from a fresh coin, committed before activation.
+    fresh = s.coins()[0]
+    r1 = s.pay([fresh], [(10 ** 8, s.next_addr())])
+    c1 = s.commitment_for(r1)
+    fund = s.coins()[1]
+    s.valid([s.pay([fund], [(0, commit_script(c1))])], note="commitment to a planned payment (before activation)",
+            version=1 | sig)
+    s.invalid("invalid: duplicate commitment", "the same commitment again",
+              [s.pay([s.coins()[1]], [(0, commit_script(c1))])], version=1 | sig)
+    s.invalid("invalid: missing or spent input", "an input naming the commitment record",
+              [s.sign(Transaction([TxIn(OutPoint(c1, 0xFFFFFFFE))], [TxOut(1, s.next_addr())], 0, 2),
+                      [(OutPoint(c1, 0xFFFFFFFE), Coin(0, b"\x00" * 33, 0, False))], keys=[s.keys[0]])],
+              version=1 | sig)
+    s.invalid("invalid: bad coinbase output", "coinbase paying a commitment",
+              mutate=lambda blk: setattr(blk.txs[0].outputs[0], "address", commit_script(b"\x22" * 32)),
+              version=1 | sig)
+    future = b"\x05" + b"\x33" * 32
+    ft = s.pay([s.coins()[1]], [(2 * 10 ** 8, future)])
+    s.valid([ft], note="output of future version 5 (valid, not relayed)", version=1 | sig)
+    grab = Transaction([TxIn(OutPoint(ft.txid, 0), b"")], [TxOut(10 ** 8, s.next_addr())], 0, 2)
+    s.valid([grab], note="future-version output spent with an empty witness", version=1 | sig)
+    # Reveal A's key, then commit to spending A's second coin: too late.
+    s.valid([s.pay([at_a[0]], [(10 ** 8, s.next_addr())])], note="first spend from A reveals its key",
+            version=1 | sig)
+    late = s.pay([at_a[1]], [(10 ** 8, s.next_addr())])
+    s.valid([s.pay([s.coins()[1]], [(0, commit_script(s.commitment_for(late)))])],
+            note="commitment made after A's key was revealed", version=1 | sig)
+    while not s.b.pq_active(s.b.tip):
+        s.valid(note=f"height {s.b.height + 1}, signalling pq", version=1 | sig)
+    s.invalid("invalid: Schnorr spend without a commitment (quantum switch active)",
+              "Schnorr spend in the first active block", [s.pay([s.coins()[2]])])
+    s.invalid("invalid: key was revealed before its commitment", "spend of A's second coin", [late])
+    s.valid([r1], note="payment committed before activation: valid")
+    s.valid([s.pay([s.coins()[2]], pq=True)], note="SLH-DSA spend: valid without a commitment")
+    unrevealed = [x for x in s.coins() if not s.b.key_revealed(x[1].address)]
+    r2 = s.pay([unrevealed[0]], [(10 ** 8, s.next_addr())])
+    s.valid([s.pay([unrevealed[1]], [(0, commit_script(s.commitment_for(r2)))], pq=True)],
+            note="commitment paid with SLH-DSA after activation")
+    for i in range(p.reveal_delay - 1):
+        s.invalid(f"invalid: commitment younger than {p.reveal_delay} blocks",
+                  f"reveal {i + 1} blocks after its commitment", [r2])
+        s.valid(note=f"height {s.b.height + 1}")
+    s.valid([r2], note=f"reveal {p.reveal_delay} blocks after its commitment")
+    return s
+
+
+def rules2_functions():
+    """Rules-2 primitives: address scripts, spend commitments, Core's MuHash3072
+    with the Kairos element prefix, and witness verification."""
+    from kairos.chain import MUHASH2_PREFIX
+    from kairos.crypto import MuHash3072
+    w = Wallet(REGTEST2, seed=SEED, n_keys=3)
+    out = {"slh_pubkey": w.keys[0].slh_pk.hex(), "note": "SLH-DSA itself: see NIST ACVP (tests/data)"}
+    out["script"] = [{"schnorr_pubkey": k.pubkey.hex(), "slh_pubkey": k.slh_pk.hex(), "salt": k.salt.hex(),
+                      "leaf": slh_leaf(k.slh_pk, k.salt).hex(), "script": make_script(k.pubkey, k.pqroot).hex(),
+                      "bech32m": {hrp: bech32m_encode(hrp, k.address) for hrp in ("krs", "tkr3", "krr")}}
+                     for k in w.keys]
+    txid = tagged_hash("Kairos/vectors/txid", b"")
+    out["commitment"] = [{"txid": txid.hex(), "pubkeys": [k.pubkey.hex() for k in w.keys[:n]],
+                          "commitment": spend_commitment(txid, [k.pubkey for k in w.keys[:n]]).hex()}
+                         for n in (0, 1, 3)]
+    items = [tagged_hash("Kairos/vectors/item", bytes([i])) for i in range(4)]
+    mh = []
+    for ins, rem in (([], []), (items[:1], []), (items, []), (items, items[1:2])):
+        m = MuHash3072()
+        for x in ins:
+            m.insert(MUHASH2_PREFIX + x)
+        for x in rem:
+            m.remove(MUHASH2_PREFIX + x)
+        mh.append({"insert": [x.hex() for x in ins], "remove": [x.hex() for x in rem], "digest": m.digest().hex()})
+    out["muhash_prefix"] = MUHASH2_PREFIX.hex()
+    out["muhash3072"] = mh
+    k = w.keys[0]
+    spent = [(5 * 10 ** 8, k.address)]
+    tx = Transaction([TxIn(OutPoint(b"\x01" * 32, 0))], [TxOut(4 * 10 ** 8, w.keys[1].address)], 0, 2)
+    sh = tx.sighash(REGTEST2.chain_id, spent)
+    sw = schnorr_witness(k.pubkey, k.pqroot, schnorr_sign(sh, k.seckey, aux_rand(k.seckey, sh)))
+    lw = slhdsa_witness(k.pubkey, k.slh_pk, k.salt, slhdsa.sign(sh, k.slh_sk))
+    wv = []
+
+    def add(wit, what, script=k.address, msg=sh):
+        r = verify_witness2(wit, script, msg)
+        wv.append({"what": what, "witness": wit.hex(), "script": script.hex(), "sighash": msg.hex(),
+                   "result": "invalid" if r is None else ("slhdsa" if r == b"" else "schnorr:" + r.hex())})
+    add(sw, "Schnorr witness")
+    add(lw, "SLH-DSA witness")
+    add(sw, "Schnorr witness, other message", msg=tagged_hash("x", b"y"))
+    add(lw, "SLH-DSA witness, other message", msg=tagged_hash("x", b"y"))
+    add(lw, "SLH-DSA witness, other address", script=w.keys[1].address)
+    add(lw[:-1], "SLH-DSA witness, short")
+    add(lw[:97] + bytes([lw[97] ^ 1]) + lw[98:], "SLH-DSA witness, salt changed")
+    add(b"\x02" + sw[1:], "Lamport kind under rules 2")
+    out["tx"] = {"hex": tx.serialize().hex(), "txid": tx.txid.hex(), "chain_id": REGTEST2.chain_id.hex(),
+                 "spent": [{"value": a, "script": b.hex()} for a, b in spent], "sighash": sh.hex()}
+    out["witness"] = wv
+    return out
+
+
+SCENARIOS = (core, limits, asert, softfork, flagday, auxpow, checkpoints, rules2)
 
 if __name__ == "__main__":
     for fn in SCENARIOS:

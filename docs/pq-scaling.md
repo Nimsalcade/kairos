@@ -1,6 +1,9 @@
 # Post-quantum scaling
 
-Status: design proposal for testnet 3. Nothing here changes testnet 2.
+Status: implemented in 0.5.0 as rules 2 (testnet 3 and mainnet), as
+recommended in section 5: commit-delay-reveal, an SLH-DSA-SHA2-128s key in
+every address, and versioned outputs. The specification is
+`docs/rules-v2.md`. Testnet 2 keeps its Lamport rule unchanged.
 
 Every figure in this document is produced by `tools/pq_sizes.py`. For each
 scheme, the tool either signs and verifies with a real implementation and

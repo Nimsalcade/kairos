@@ -1,8 +1,57 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — testnet 3: rules 2
 
-No consensus change.
+**Consensus change: a new chain.** Testnet 3 (`--testnet`) and mainnet use
+rules 2 (`docs/rules-v2.md`). Testnet 2 keeps rules 1, byte for byte: run it
+with `--testnet2`. Every rules-1 conformance vector is unchanged.
+
+- **SLH-DSA-SHA2-128s replaces Lamport** as the post-quantum key
+  (`kairos/slhdsa.py`, FIPS 205, pure Python). It is checked against NIST's
+  ACVP key-generation, signing and verification vectors, and byte for byte
+  against an independent implementation. It is stateless, so one key per
+  wallet signs any number of times, and a salt per address keeps addresses
+  unlinkable. A post-quantum input is 7,953 bytes instead of 24,648: 3.1 times
+  smaller, about 250 inputs per block.
+- **Commit-delay-reveal is the rule the quantum switch turns on.** After
+  activation a Schnorr spend is valid if a commitment to the transaction and
+  the keys it reveals was mined at least `reveal_delay` (100) blocks earlier,
+  before any coin at those addresses was spent. Payments after an emergency
+  stay cheap: 258 bytes for a one-input reveal. Commitments made before
+  activation count, so migration intents can be made in advance. SLH-DSA
+  spends need no commitment.
+- **Versioned outputs.** Scripts are 33 bytes (version and program).
+  Versions 1 to 0x7F are reserved for soft forks and are anyone-can-spend by
+  consensus, but not relayed. 0x80 is a spend commitment. 0x81 and above are
+  invalid. Later signature schemes can therefore arrive as soft forks.
+- **Bitcoin Core's MuHash3072** (ChaCha20 element mapping, SHA-256 digest)
+  commits to the UTXO set, with a Kairos prefix in each element. It is checked
+  against Core's own test vectors.
+- **Commitment and reveal records** live next to the coins, are covered by
+  the header's UTXO commitment, and are undone on reorganisation and carried
+  by UTXO snapshots.
+- **Networks.** New: testnet 3 (genesis 2026-09-28, ports 19335/19334,
+  addresses `tkr31...`), rules-2 regtest (`--regtest`), and a re-mined
+  placeholder mainnet genesis with rules 2. Kept: testnet 2 (`--testnet2`) and
+  rules-1 regtest (`--regtest1`). Transactions are parsed by the network's
+  rules, never by their version field.
+- **Wallet.** Wallets on rules-2 networks sign with SLH-DSA after activation,
+  signing once per transaction. New: `sendcommitted` (console and RPC), which
+  broadcasts a commitment and lets the node send the payment by itself once
+  the commitment is old enough; `pending` and `listpending`. Pending payments
+  are kept in the wallet file.
+- **Relay policy:** transactions creating or spending reserved output
+  versions are not relayed.
+- `getpqstats` measures SLH-DSA inputs and counts commitments on rules-2
+  networks.
+- `deploy/setup-seed-testnet3.sh` sets up a testnet 3 seed next to an existing
+  testnet 2 seed, with a separate service, port, data directory and CLI.
+- Conformance vectors: a `rules2` chain scenario (35 steps) and rules-2
+  function checks. Three more injected consensus bugs are all caught.
+- Tests: `tests/test_rules2.py` (24 tests). Each safety check of
+  commit-delay-reveal was removed in turn, and every removal fails a test.
+
+### Also in 0.5.0 (no consensus change)
 
 - Fix: a transaction that arrived while a block was being mined waited for
   the next block, because the miner kept the block it had built (seen on

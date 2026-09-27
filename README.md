@@ -13,9 +13,11 @@ exposed. Read the [whitepaper](docs/kairos-whitepaper.md).
 > The path to a real network is written down in [LAUNCH.md](LAUNCH.md).
 
 > [!NOTE]
-> **0.4.0 starts testnet 2.** The consensus rules changed (see
-> [CHANGELOG.md](CHANGELOG.md)), so the 0.3 chain was retired. Your wallet
-> and backup code keep working; balances start again from zero.
+> **0.5.0 starts testnet 3** with the rules mainnet will launch with
+> ([docs/rules-v2.md](docs/rules-v2.md)): SLH-DSA post-quantum keys,
+> commit-delay-reveal, versioned outputs and Bitcoin Core's MuHash. `--testnet`
+> now means testnet 3. Testnet 2 keeps running unchanged under `--testnet2`.
+> Testnet 3 wallets are new wallets with new addresses (`tkr31...`).
 
 ## What is different
 
@@ -23,7 +25,7 @@ exposed. Read the [whitepaper](docs/kairos-whitepaper.md).
 |---------------------------------------------|-----------------------------------------------------------|
 | Security budget shrinks toward zero         | Smooth emission that settles into a small permanent reward |
 | Fee auctions are volatile                   | Predictable base fee (EIP-1559 style), which is burned    |
-| Quantum computers could break today's keys  | Every address also commits to a hash-based backup key     |
+| Quantum computers could break today's keys  | Every address also commits to a stateless hash-based key (SLH-DSA); after an emergency, cheap Schnorr spends continue through commit-delay-reveal |
 | New nodes must replay all history           | Every block commits to the unspent coins and the next base fee; new nodes start from a verified snapshot |
 | Hardware wallets cannot see what they pay   | Signatures commit to the amounts being spent              |
 | Soft forks need ad-hoc coordination         | Version-bit signalling built in; the quantum switch is the first deployment |
@@ -56,15 +58,15 @@ py -m venv .venv
 ```
 
 The first start creates an **encrypted wallet**. Choose a passphrase, then write
-down the backup code it prints (`krsseed1...`). Your node finds the network by
-itself through the built-in seed nodes. Leave out `--mine` if you only want to
-run a node.
+down the recovery words it prints. Your node finds the network by itself
+through the built-in seed nodes. Leave out `--mine` if you only want to run a
+node.
 
 The seed nodes only relay; blocks are mined by whoever runs `--mine`, which
 currently includes the maintainer's own computer. Two things about block timing
 are expected, not bugs:
 
-- **Fast blocks in the early days of testnet 2.** The chain started at a
+- **Fast blocks in the early days of a testnet.** The chain starts at a
   deliberately easy difficulty, and difficulty rises gradually (ASERT, 48-hour
   half-life), so blocks can arrive every few seconds until it catches up with
   the miners' hash rate.
@@ -80,37 +82,44 @@ are expected, not bugs:
 | `info` | Chain height, supply, fees and soft-fork state |
 | `balance` | Your coins (mining rewards unlock after 20 blocks) |
 | `address` | Your address, to receive coins |
-| `send <address> <amount>` | Pay someone, e.g. `send tkrs1... 2.5` |
+| `send <address> <amount>` | Pay someone, e.g. `send tkr31... 2.5` |
+| `sendcommitted <address> <amount>` | Pay through commit-delay-reveal: a small commitment now, the payment itself goes out by itself 100 blocks later. Cheap after the quantum switch. |
+| `pending` | Commit-delay-reveal payments not finished yet |
 | `peers` | Who you're connected to |
-| `backup` | Show your backup code again |
+| `backup` | Show your recovery words again |
 | `quit` | Stop the node |
 
 Several commands can go on one line, separated by `;`.
 
 ### Seed nodes
 
-These are built in, so you don't need to type them:
+These are built in, so you don't need to type them. Testnet 3 uses port 19335
+and testnet 2 port 19333 on the same machines:
 
-| Location | Address |
-|---|---|
-| Frankfurt | `95.179.255.186:19333` |
-| Singapore | `45.76.176.39:19333` |
-| Miami | `207.246.114.19:19333` |
+| Location | Testnet 3 | Testnet 2 |
+|---|---|---|
+| Frankfurt | `95.179.255.186:19335` | `95.179.255.186:19333` |
+| Singapore | `45.76.176.39:19335` | `45.76.176.39:19333` |
+| Miami | `207.246.114.19:19335` | `207.246.114.19:19333` |
 
 ## Run it your way
 
-- **Always-on server:** [`deploy/setup-seed.sh`](deploy/setup-seed.sh) turns a
-  fresh Ubuntu 24.04 server into a hardened, auto-restarting node (unprivileged
-  service user, firewall, encrypted wallet, test suite run before going live).
+- **Always-on server:** [`deploy/setup-seed-testnet3.sh`](deploy/setup-seed-testnet3.sh)
+  turns an Ubuntu 24.04 server into a hardened, auto-restarting testnet 3 node
+  (unprivileged service user, firewall, encrypted wallet, test suite run before
+  going live), next to an existing testnet 2 node from
+  [`deploy/setup-seed.sh`](deploy/setup-seed.sh).
 - **Scripting:** the node serves a Bitcoin Core-style JSON-RPC on localhost with
   cookie authentication:
   ```
   python -m kairos --testnet rpc getblockchaininfo
-  python -m kairos --testnet rpc sendtoaddress tkrs1... 1.5
+  python -m kairos --testnet rpc sendtoaddress tkr31... 1.5
+  python -m kairos --testnet rpc sendcommitted tkr31... 1.5
   python -m kairos --testnet rpc getpeerinfo
   ```
 - **Private experiments:** `--regtest` gives you a private chain with instant
-  blocks; `python -m kairos demo` runs a three-node network on your machine.
+  blocks and the mainnet rules (`--regtest1` for the 0.4 rules);
+  `python -m kairos demo` runs a three-node network on your machine.
 - **Wallet tools:** `python -m kairos --testnet wallet show | backup | restore <code>`
 - **Fast sync:** on a synced node, `python -m kairos --testnet utxo export kairos.snap`;
   on a new node that has been running for a minute (so it has the headers),

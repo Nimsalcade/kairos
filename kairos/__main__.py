@@ -1,7 +1,7 @@
 """
 kairos - command line
 
-  python -m kairos [--testnet|--regtest] info
+  python -m kairos [--testnet|--testnet2|--regtest|--regtest1] info
   python -m kairos demo
   python -m kairos [net] node [--connect host:port] [--mine] [--rpcport N]
   python -m kairos [net] rpc <method> [params...]
@@ -20,7 +20,7 @@ from . import __version__
 from . import crypto
 from .chain import Chain, ValidationError
 from .node import Node
-from .params import NETWORKS, DEFAULT_PORTS, REGTEST, COIN, subsidy
+from .params import NETWORKS, DEFAULT_PORTS, REGTEST2, COIN, subsidy
 from .wallet import Wallet, fmt
 
 _plock = threading.Lock()
@@ -36,8 +36,20 @@ def say(*a):
             print(*a, flush=True)
 
 
+NET_FLAGS = (("testnet", "test3"), ("testnet2", "test"), ("regtest", "regtest2"), ("regtest1", "regtest"))
+
+
 def net(args):
-    return NETWORKS["regtest" if args.regtest else "test" if args.testnet else "main"]
+    """--testnet is testnet 3 (rules 2) from 0.5.0; --testnet2 keeps the 0.4 testnet.
+    --regtest has the rules-2 (mainnet) rules; --regtest1 the 0.4 rules."""
+    for flag, name in NET_FLAGS:
+        if getattr(args, flag, False):
+            return NETWORKS[name]
+    return NETWORKS["main"]
+
+
+def is_regtest(p) -> bool:
+    return p.name.startswith("regtest")
 
 
 def datadir_for(args, p):
@@ -73,7 +85,7 @@ def open_wallet(args, p):
         with open(path) as f:
             enc = json.load(f).get("encrypted")
         return Wallet.load(p, path, ask_passphrase() if enc else None)
-    if p.name == "regtest":
+    if is_regtest(p):
         return Wallet.load_or_create(p, path)
     print("creating a new wallet (it will be encrypted)")
     w = Wallet.load_or_create(p, path, ask_passphrase(new=True))
@@ -83,10 +95,10 @@ def open_wallet(args, p):
 
 
 def safety_banner(p):
-    if p.name == "regtest":
+    if is_regtest(p):
         return
     print("=" * 72)
-    print(" Kairos 0.4.x has NOT been independently audited. See LAUNCH.md.")
+    print(f" Kairos {__version__} has NOT been independently audited. See LAUNCH.md.")
     if not crypto.HARDENED:
         print(" libsecp256k1 not found: signing is disabled on this network.")
         print(" Install it with:  pip install coincurve")
@@ -107,12 +119,13 @@ def cmd_info(args):
     print(f"tail subsidy     {fmt(p.tail_reward)} per block, forever")
     print(f"base fee         EIP-1559 style, burned; target {p.target_block_size:,} B, max {p.max_block_size:,} B")
     print(f"merge mining     chain id 0x{p.mm_chain_id:04x}, from height {p.auxpow_start_height}")
-    print(f"address prefix   {p.hrp}1...  (bech32m, dual-key Schnorr + Lamport)")
+    pq = "Lamport" if p.rules == 1 else "SLH-DSA, commit-delay-reveal"
+    print(f"address prefix   {p.hrp}1...  (bech32m, dual-key Schnorr + {pq}; rules {p.rules})")
     print(f"default ports    p2p {DEFAULT_PORTS[p.name][0]}, rpc {DEFAULT_PORTS[p.name][1]}")
 
 
 def cmd_demo(args):
-    p = REGTEST
+    p = REGTEST2
     print("== Kairos demo: three independent nodes on localhost ==\n")
     names = ["alice", "bob", "carol"]
     chains = [Chain(p) for _ in names]
@@ -158,7 +171,8 @@ def cmd_demo(args):
 
 
 HELP = ("commands (one per line, or separate with ';'):\n"
-        "  info | balance | address | newaddress | send <addr> <KRS> | mine [n] | peers | backup | quit")
+        "  info | balance | address | newaddress | send <addr> <KRS> | sendcommitted <addr> <KRS>\n"
+        "  pending | mine [n] | peers | backup | quit")
 
 
 def run_command(line, chain, wallet, node):
@@ -209,12 +223,30 @@ def run_command(line, chain, wallet, node):
             for tx in txs:
                 node.submit_tx(tx)
             note = "  (note: that address belongs to this same wallet)" if to in wallet.by_addr else ""
-            pq = "  (post-quantum: Lamport signatures)" if chain.pq_active(chain.tip) else ""
+            scheme = "Lamport" if chain.params.rules == 1 else "SLH-DSA"
+            pq = f"  (post-quantum: {scheme} signatures)" if chain.pq_active(chain.tip) else ""
             if len(txs) == 1:
                 print(f"sent {txs[0].txid.hex()}{note}{pq}\n  it confirms when a block is mined")
             else:
                 print(f"sent as {len(txs)} transactions{note}{pq}:\n  " + "\n  ".join(t.txid.hex() for t in txs)
                       + "\n  they confirm when blocks are mined")
+        elif cmd == "sendcommitted":
+            if len(rest) != 2:
+                raise ValueError("usage: sendcommitted <addr> <KRS>")
+            commit, reveal = wallet.create_commit_reveal(chain, wallet.decode(rest[0]),
+                                                         int(round(float(rest[1]) * COIN)))
+            node.submit_tx(commit)
+            print(f"commitment {commit.txid.hex()} sent\n"
+                  f"payment {reveal.txid.hex()} goes out by itself {chain.params.reveal_delay} blocks "
+                  f"after the commitment is mined (keep the node running)")
+        elif cmd == "pending":
+            if not wallet.pending:
+                print("no pending payments")
+            for p in wallet.pending:
+                h = chain.commitment_height(bytes.fromhex(p["commitment"]))
+                state = ("commitment not mined yet" if h is None else
+                         f"commitment mined at {h}, payment from height {h + chain.params.reveal_delay}")
+                print(f"{p['commitment'][:16]}  {state}")
         elif cmd == "mine":
             for _ in range(int(rest[0]) if rest else 1):
                 node.mine_one()
@@ -353,7 +385,7 @@ def cmd_wallet(args):
         if os.path.exists(path):
             raise SystemExit(f"{path} exists; move it away first")
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        pw = None if p.name == "regtest" else ask_passphrase(new=True)
+        pw = None if is_regtest(p) else ask_passphrase(new=True)
         w = Wallet.restore(p, args.code, path, passphrase=pw)
         print(f"restored {len(w.keys)} addresses into {path}")
         return
@@ -376,15 +408,15 @@ def cmd_wallet(args):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="kairos", description=f"Kairos v{__version__}")
     g = ap.add_mutually_exclusive_group()
-    g.add_argument("--testnet", action="store_true")
-    g.add_argument("--regtest", action="store_true")
+    for flag, _ in NET_FLAGS:
+        g.add_argument(f"--{flag}", action="store_true")
     ap.add_argument("--datadir")
     ap.add_argument("--wallet")
     ap.add_argument("--rpcport", type=int)
     sub = ap.add_subparsers(dest="cmd", required=True)
     common = argparse.ArgumentParser(add_help=False)   # same options also accepted after the command
-    common.add_argument("--testnet", action="store_true", default=argparse.SUPPRESS)
-    common.add_argument("--regtest", action="store_true", default=argparse.SUPPRESS)
+    for flag, _ in NET_FLAGS:
+        common.add_argument(f"--{flag}", action="store_true", default=argparse.SUPPRESS)
     common.add_argument("--datadir", default=argparse.SUPPRESS)
     common.add_argument("--wallet", default=argparse.SUPPRESS)
     common.add_argument("--rpcport", type=int, default=argparse.SUPPRESS)
@@ -413,11 +445,15 @@ def main(argv=None):
     ux.add_argument("action", choices=["export", "import"])
     ux.add_argument("file")
     args = ap.parse_args(argv)
-    if args.testnet and args.regtest:
-        ap.error("choose one of --testnet / --regtest")
+    if sum(bool(getattr(args, f, False)) for f, _ in NET_FLAGS) > 1:
+        ap.error("choose one network flag")
     fn = {"info": cmd_info, "demo": cmd_demo, "node": cmd_node, "rpc": cmd_rpc, "wallet": cmd_wallet,
           "utxo": cmd_utxo}
-    return fn[args.cmd](args)
+    try:
+        return fn[args.cmd](args)
+    except BrokenPipeError:              # output piped into `head` and friends: not an error
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 0
 
 
 if __name__ == "__main__":

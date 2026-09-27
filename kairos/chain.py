@@ -12,11 +12,12 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from .block import Block, BlockHeader, genesis_block, HEADER_SIZE, VERSION_AUXPOW
-from .crypto import MuHash, sha256
+from .crypto import MuHash, MuHash3072, sha256
 from .params import (ChainParams, Deployment, MAX_MONEY, subsidy, asert_target, target_to_bits,
                      bits_to_target, block_work, next_base_fee, generated_at)
-from .tx import (OutPoint, Transaction, TxOut, make_coinbase, verify_witness,
-                 write_varint, read_varint)
+from .tx import (OutPoint, Transaction, TxOut, make_coinbase, verify_witness, verify_witness2,
+                 spend_commitment, write_varint, read_varint, WIT_SCHNORR, OUT_KEY, OUT_COMMIT,
+                 OUT_FUTURE_MAX, TX_VERSION_V1, TX_VERSION_V2)
 
 
 class ValidationError(Exception):
@@ -39,6 +40,19 @@ BLOCK_CACHE = 128                    # recently used blocks kept decoded in memo
 
 DEFINED, STARTED, LOCKED_IN, ACTIVE, FAILED = "defined", "started", "locked_in", "active", "failed"
 
+# Rules 2 keep two kinds of records next to the coins, under outpoint indexes no
+# transaction output can have (a transaction has at most 10,000 outputs):
+#   commitment  OutPoint(C, COMMIT_INDEX)        height = block the commitment was mined in
+#   reveal      OutPoint(program, REVEAL_INDEX)  height = block that first spent from the address
+# Records have value 0 and a zero script. Being entries of the UTXO map, they are
+# covered by the header's MuHash commitment, persisted, undone on reorg and
+# carried by UTXO snapshots exactly like coins. No input may spend one.
+COMMIT_INDEX = 0xFFFFFFFE
+REVEAL_INDEX = 0xFFFFFFFD
+RECORD_MIN = 0xFFFFFF00
+RECORD_SCRIPT = b"\x00" * 33
+MUHASH2_PREFIX = b"Kairos/utxo2\x00"   # rules 2: domain prefix of every MuHash element
+
 
 @dataclass(frozen=True)
 class Coin:
@@ -50,6 +64,19 @@ class Coin:
 
 def coin_bytes(op: OutPoint, c: Coin) -> bytes:
     return op.serialize() + struct.pack("<Q", c.value) + c.address + struct.pack("<I?", c.height, c.coinbase)
+
+
+def parse_coin(raw: bytes):
+    """The inverse of coin_bytes (the script length follows from the record length)."""
+    n = len(raw) - 49
+    op = OutPoint(raw[:32], struct.unpack("<I", raw[32:36])[0])
+    value = struct.unpack("<Q", raw[36:44])[0]
+    height, cb = struct.unpack("<I?", raw[44 + n:49 + n])
+    return op, Coin(value, raw[44:44 + n], height, cb)
+
+
+def is_record(op: OutPoint) -> bool:
+    return op.index >= RECORD_MIN
 
 
 class BlockIndex:
@@ -116,8 +143,9 @@ class BlockStore:
     read back on demand through a small cache, so memory does not grow with
     chain history. Without a path everything stays in memory (tests, demo)."""
 
-    def __init__(self, path: Optional[str]):
+    def __init__(self, path: Optional[str], rules: int = 1):
         self.path = path
+        self.rules = rules
         self.mem: Dict[bytes, Block] = {}
         self.offsets: Dict[bytes, Tuple[int, int]] = {}
         self.cache: "OrderedDict[bytes, Block]" = OrderedDict()
@@ -139,7 +167,7 @@ class BlockStore:
                 if len(raw) != n or sha256(raw)[:4] != hdr[8:12]:
                     break              # torn write from a crash: stop here
                 try:
-                    blk = Block.deserialize(raw)
+                    blk = Block.deserialize(raw, self.rules)
                 except ValueError:
                     break
                 yield blk, good + 12, n
@@ -199,7 +227,7 @@ class BlockStore:
         with open(self.path, "rb") as f:
             f.seek(loc[0])
             raw = f.read(loc[1])
-        blk = Block.deserialize(raw)
+        blk = Block.deserialize(raw, self.rules)
         self._cache(h, blk)
         return blk
 
@@ -228,6 +256,7 @@ class Chain:
         self.mempool_fee: Dict[bytes, int] = {}
         self.mempool_spends: Dict[OutPoint, bytes] = {}
         self.sig_cache = set()
+        self.sig_cache2: Dict[bytes, list] = {}     # rules 2: wtxid -> Schnorr (key, script) it reveals
         self.listeners = []          # callables(event, obj)
         self.signal = set()          # deployment names this miner signals for
         self.children: Dict[bytes, List[BlockIndex]] = {}
@@ -235,12 +264,15 @@ class Chain:
         self.since_snapshot = 0
         self.log = lambda *a: None
 
+        self.rules2 = params.rules >= 2
+        self._MH = MuHash3072 if self.rules2 else MuHash
+        self.coin_len = 49 + params.script_len
         g = genesis_block(params)
         if not g.header.check_pow():
             raise RuntimeError("genesis block does not satisfy its own proof-of-work")
         gi = BlockIndex(g.header, None)
         gi.connected = gi.has_data = gi.chain_data = True
-        gi.muhash = MuHash().value()
+        gi.muhash = self._MH().value()
         gi.next_base_fee = params.min_base_fee
         self.genesis = gi
         self.index[gi.hash] = gi
@@ -253,7 +285,7 @@ class Chain:
         self.mempool_bytes = 0
         self.mempool_seq = 0         # counts admissions, so a miner can tell its template is stale
         self.datadir = datadir
-        self.blocks = BlockStore(os.path.join(datadir, BLOCK_FILE) if datadir else None)
+        self.blocks = BlockStore(os.path.join(datadir, BLOCK_FILE) if datadir else None, params.rules)
         self.blocks.pin(g)
         if datadir:
             os.makedirs(datadir, exist_ok=True)
@@ -297,7 +329,7 @@ class Chain:
         if not os.path.exists(path):
             self.log("headers.dat missing; the UTXO snapshot must be imported again")
             return False
-        store = BlockStore(path)
+        store = BlockStore(path, self.params.rules)
         for blk, _, _ in store.scan():
             if self.submit_header(blk.header, blk.auxpow) != "accepted":
                 return False
@@ -394,11 +426,7 @@ class Chain:
                 return data[pos - n:pos]
 
             def coin():
-                raw = take(81)
-                op = OutPoint(raw[:32], struct.unpack("<I", raw[32:36])[0])
-                value = struct.unpack("<Q", raw[36:44])[0]
-                height, cb = struct.unpack("<I?", raw[76:81])
-                return op, Coin(value, raw[44:76], height, cb)
+                return parse_coin(take(self.coin_len))
 
             tip = take(32)
             assumed_height, n = struct.unpack("<II", take(8))
@@ -568,7 +596,7 @@ class Chain:
             raise ValidationError("unexpected coinbase")
         if not tx.inputs or not tx.outputs:
             raise ValidationError("empty inputs or outputs")
-        if tx.version != 1:
+        if tx.version != (TX_VERSION_V2 if self.rules2 else TX_VERSION_V1):
             raise ValidationError("unknown tx version")
         if tx.expiry and height > tx.expiry:
             raise ValidationError("transaction expired")
@@ -578,8 +606,21 @@ class Chain:
         if len(set(ops)) != len(ops):
             raise ValidationError("duplicate input")
         out_total = 0
+        commits = set()
         for o in tx.outputs:
-            if not (0 < o.value <= MAX_MONEY) or len(o.address) != 32:
+            if len(o.address) != p.script_len:
+                raise ValidationError("bad output")
+            if self.rules2 and o.address[0] >= OUT_COMMIT:
+                if o.address[0] != OUT_COMMIT:
+                    raise ValidationError("unknown output version")
+                c = o.address[1:]
+                if o.value != 0:
+                    raise ValidationError("commitment output must have value 0")
+                if c in commits or view.get(OutPoint(c, COMMIT_INDEX)) is not None:
+                    raise ValidationError("duplicate commitment")
+                commits.add(c)
+                continue
+            if not 0 < o.value <= MAX_MONEY:
                 raise ValidationError("bad output")
             out_total += o.value
             if out_total > MAX_MONEY:
@@ -587,24 +628,29 @@ class Chain:
         coins = []
         in_total = 0
         for inp in tx.inputs:
-            coin = view.get(inp.prev)
+            coin = None if is_record(inp.prev) else view.get(inp.prev)
             if coin is None:
                 raise ValidationError("missing or spent input")
             if coin.coinbase and height - coin.height < p.coinbase_maturity:
                 raise ValidationError("immature coinbase spend")
             coins.append(coin)
             in_total += coin.value
-        # The witness check depends only on the tx bytes and the coins it names
-        # (an outpoint identifies its coin), so it is safe to cache by wtxid.
-        cache_key = (tx.wtxid, pq_only)
-        if cache_key not in self.sig_cache:
-            sh = tx.sighash(p.chain_id, [(c.value, c.address) for c in coins])
-            for inp, coin in zip(tx.inputs, coins):
-                if not verify_witness(inp.witness, coin.address, sh, pq_only):
-                    raise ValidationError("invalid signature")
-            if len(self.sig_cache) >= MAX_SIG_CACHE:
-                self.sig_cache.clear()
-            self.sig_cache.add(cache_key)
+        if self.rules2:
+            revealed = self._check_witnesses2(tx, coins)
+            if pq_only and revealed:
+                self._check_commitment(tx, revealed, view, height)
+        else:
+            # The witness check depends only on the tx bytes and the coins it names
+            # (an outpoint identifies its coin), so it is safe to cache by wtxid.
+            cache_key = (tx.wtxid, pq_only)
+            if cache_key not in self.sig_cache:
+                sh = tx.sighash(p.chain_id, [(c.value, c.address) for c in coins])
+                for inp, coin in zip(tx.inputs, coins):
+                    if not verify_witness(inp.witness, coin.address, sh, pq_only):
+                        raise ValidationError("invalid signature")
+                if len(self.sig_cache) >= MAX_SIG_CACHE:
+                    self.sig_cache.clear()
+                self.sig_cache.add(cache_key)
         fee = in_total - out_total
         if fee < 0:
             raise ValidationError("outputs exceed inputs")
@@ -613,22 +659,72 @@ class Chain:
             raise ValidationError(f"fee {fee} below base fee burn {burn}")
         return fee, burn
 
-    @staticmethod
-    def apply_tx(tx: Transaction, view: UtxoView, height: int):
+    def _check_witnesses2(self, tx: Transaction, coins) -> list:
+        """Rules 2: verify every witness. Returns the (Schnorr key, script) of each
+        Schnorr spend, in input order. Outputs of versions 1..0x7F are reserved for
+        future soft forks: any witness spends them."""
+        hit = self.sig_cache2.get(tx.wtxid)
+        if hit is not None:
+            return hit
+        sh = tx.sighash(self.params.chain_id, [(c.value, c.address) for c in coins])
+        revealed = []
+        for inp, coin in zip(tx.inputs, coins):
+            if coin.address[0] != OUT_KEY:
+                continue
+            pk = verify_witness2(inp.witness, coin.address, sh)
+            if pk is None:
+                raise ValidationError("invalid signature")
+            if pk:
+                revealed.append((pk, coin.address))
+        if len(self.sig_cache2) >= MAX_SIG_CACHE:
+            self.sig_cache2.clear()
+        self.sig_cache2[tx.wtxid] = revealed
+        return revealed
+
+    def _check_commitment(self, tx: Transaction, revealed, view: UtxoView, height: int):
+        """Rules 2, quantum switch active: commit-delay-reveal. A Schnorr spend is
+        valid only if a commitment to this transaction and the keys it reveals was
+        mined at least `reveal_delay` blocks earlier, and no coin at any of the
+        spent addresses had been spent (revealing the key) by the time it was mined."""
+        c = spend_commitment(tx.txid, [pk for pk, _ in revealed])
+        rec = view.get(OutPoint(c, COMMIT_INDEX))
+        if rec is None:
+            raise ValidationError("Schnorr spend without a commitment (quantum switch active)")
+        if height - rec.height < self.params.reveal_delay:
+            raise ValidationError(f"commitment younger than {self.params.reveal_delay} blocks")
+        for _, script in revealed:
+            r = view.get(OutPoint(script[1:], REVEAL_INDEX))
+            if r is not None and r.height <= rec.height:
+                raise ValidationError("key was revealed before its commitment")
+
+    def apply_tx(self, tx: Transaction, view: UtxoView, height: int):
         cb = tx.is_coinbase()
         if not cb:
             for inp in tx.inputs:
+                if self.rules2:
+                    coin = view.get(inp.prev)
+                    if coin.address[0] == OUT_KEY:           # the first spend reveals the address's key
+                        rk = OutPoint(coin.address[1:], REVEAL_INDEX)
+                        if view.get(rk) is None:
+                            view.add(rk, Coin(0, RECORD_SCRIPT, height, False))
                 view.spend(inp.prev)
         for i, o in enumerate(tx.outputs):
+            if self.rules2 and o.address[0] == OUT_COMMIT:
+                view.add(OutPoint(o.address[1:], COMMIT_INDEX), Coin(0, RECORD_SCRIPT, height, False))
+                continue
             view.add(OutPoint(tx.txid, i), Coin(o.value, o.address, height, cb))
 
-    @staticmethod
-    def utxo_digest(parent_muhash: int, view: UtxoView):
-        mh = MuHash(parent_muhash)
+    def element(self, op: OutPoint, c: Coin) -> bytes:
+        """What the UTXO commitment hashes for one entry."""
+        b = coin_bytes(op, c)
+        return MUHASH2_PREFIX + b if self.rules2 else b
+
+    def utxo_digest(self, parent_muhash: int, view: UtxoView):
+        mh = self._MH(parent_muhash)
         for op, c in view.spent.items():
-            mh.remove(coin_bytes(op, c))
+            mh.remove(self.element(op, c))
         for op, c in view.added.items():
-            mh.insert(coin_bytes(op, c))
+            mh.insert(self.element(op, c))
         d = mh.digest()
         return d, mh.value()
 
@@ -831,12 +927,14 @@ class Chain:
             burns += burn
             self.apply_tx(tx, view, height)
         cb = blk.txs[0]
-        if cb.expiry != 0 or cb.version != 1:
+        if cb.expiry != 0 or cb.version != (TX_VERSION_V2 if self.rules2 else TX_VERSION_V1):
             raise ValidationError("bad coinbase fields")
         sub = subsidy(p, parent.generated)
         cb_total = 0
         for o in cb.outputs:
-            if not (0 <= o.value <= MAX_MONEY) or len(o.address) != 32:
+            if not (0 <= o.value <= MAX_MONEY) or len(o.address) != p.script_len:
+                raise ValidationError("bad coinbase output")
+            if self.rules2 and o.address[0] != OUT_KEY:
                 raise ValidationError("bad coinbase output")
             cb_total += o.value
         if cb_total > sub + tips:
@@ -866,22 +964,27 @@ class Chain:
             raise RuntimeError("cannot reorganise below the UTXO snapshot base")
         blk = self.blocks[idx.hash]
         spent = self.undo.pop(idx.hash)
+        added = [OutPoint(tx.txid, i) for tx in blk.txs for i in range(len(tx.outputs))]
+        if self.rules2:                   # records this block created
+            added += [OutPoint(o.address[1:], COMMIT_INDEX) for tx in blk.txs[1:] for o in tx.outputs
+                      if o.address[0] == OUT_COMMIT]
+            for c in spent.values():
+                rk = OutPoint(c.address[1:], REVEAL_INDEX)
+                r = self.utxos.get(rk)
+                if c.address[0] == OUT_KEY and r is not None and r.height == idx.height and rk not in added:
+                    added.append(rk)
+        added = [op for op in added if op in self.utxos]
         if idx.parent.muhash is None:
             # Undo the multiset arithmetically: the parent's digest is the child's
-            # with this block's outputs removed and its spent coins put back.
-            mh = MuHash(idx.muhash)
-            for tx in blk.txs:
-                for i, o in enumerate(tx.outputs):
-                    op = OutPoint(tx.txid, i)
-                    coin = self.utxos.get(op)
-                    if coin is not None:
-                        mh.remove(coin_bytes(op, coin))
+            # with this block's entries removed and its spent coins put back.
+            mh = self._MH(idx.muhash)
+            for op in added:
+                mh.remove(self.element(op, self.utxos[op]))
             for op, coin in spent.items():
-                mh.insert(coin_bytes(op, coin))
+                mh.insert(self.element(op, coin))
             idx.parent.muhash = mh.value()
-        for tx in blk.txs:
-            for i in range(len(tx.outputs)):
-                self.utxos.pop(OutPoint(tx.txid, i), None)
+        for op in added:
+            del self.utxos[op]
         self.utxos.update(spent)
         self.active.pop()
         for fn in self.listeners:
@@ -957,6 +1060,8 @@ class Chain:
             for i in tx.inputs:
                 if i.prev in self.mempool_spends:
                     raise ValidationError("conflicts with mempool transaction")
+            if self.rules2:
+                self._standard2(tx)
             fee, _ = self.check_tx(tx, UtxoView(self.utxos), self.height + 1, self.tip.next_base_fee,
                                    self.pq_active(self.tip))
             rate = fee / tx.size
@@ -973,6 +1078,18 @@ class Chain:
             for i in tx.inputs:
                 self.mempool_spends[i.prev] = tx.txid
             return True
+
+    def _standard2(self, tx: Transaction):
+        """Relay policy, not consensus: outputs of versions reserved for future soft
+        forks are neither created nor spent through the mempool, so nobody loses
+        coins to a version whose rules they cannot know yet."""
+        for o in tx.outputs:
+            if len(o.address) == 33 and 0 < o.address[0] <= OUT_FUTURE_MAX:
+                raise ValidationError("non-standard: output version reserved for a future soft fork")
+        for i in tx.inputs:
+            c = self.utxos.get(i.prev)
+            if c is not None and 0 < c.address[0] <= OUT_FUTURE_MAX:
+                raise ValidationError("non-standard: spends an output of a future version")
 
     # ------------------------------------------------------------ mining
     def block_version(self, parent: BlockIndex, auxpow: bool = False) -> int:
@@ -1007,7 +1124,8 @@ class Chain:
                 chosen.append(tx)
                 tips += fee - burn
                 budget -= tx.size
-            cb = make_coinbase(height, [TxOut(subsidy(p, parent.generated) + tips, reward_address)], extra)
+            cb = make_coinbase(height, [TxOut(subsidy(p, parent.generated) + tips, reward_address)], extra,
+                               TX_VERSION_V2 if self.rules2 else TX_VERSION_V1)
             self.apply_tx(cb, view, height)
             utxo_root, _ = self.utxo_digest(parent.muhash, view)
             tm = max(t if t is not None else self.now(), self.median_time_past(parent) + 1)
@@ -1065,6 +1183,14 @@ class Chain:
                     break
             return [self.blocks[i.hash] for i in self.active[start + 1:start + 1 + limit]]
 
+    def key_revealed(self, script: bytes) -> bool:
+        """Rules 2: has a coin at this address ever been spent (revealing its key)?"""
+        return len(script) == 33 and OutPoint(script[1:], REVEAL_INDEX) in self.utxos
+
+    def commitment_height(self, commitment: bytes) -> Optional[int]:
+        rec = self.utxos.get(OutPoint(commitment, COMMIT_INDEX))
+        return None if rec is None else rec.height
+
     def coins_for(self, addresses) -> Dict[OutPoint, Coin]:
         addresses = set(addresses)
         with self.lock:
@@ -1098,7 +1224,7 @@ class Chain:
                     "bytes": len(body) + 32, "utxo_root": t.header.utxo_root.hex()}
 
     @staticmethod
-    def read_utxo_snapshot(path: str):
+    def read_utxo_snapshot(path: str, params: ChainParams):
         with open(path, "rb") as f:
             data = f.read()
         if len(data) < len(UTXO_MAGIC) + 4 + 32 + 12 + 32 or sha256(data[:-32]) != data[-32:]:
@@ -1110,22 +1236,22 @@ class Chain:
         block_hash = data[pos + 4:pos + 36]
         height, n = struct.unpack("<IQ", data[pos + 36:pos + 48])
         pos += 48
-        if pos + 81 * n != len(data) - 32:
+        clen = 49 + params.script_len
+        if pos + clen * n != len(data) - 32:
             raise ValueError("snapshot file is damaged (length)")
         coins = {}
-        mh = MuHash()
+        mh = MuHash3072() if params.rules >= 2 else MuHash()
+        prefix = MUHASH2_PREFIX if params.rules >= 2 else b""
         total = 0
         for _ in range(n):
-            raw = data[pos:pos + 81]
-            pos += 81
-            op = OutPoint(raw[:32], struct.unpack("<I", raw[32:36])[0])
-            value = struct.unpack("<Q", raw[36:44])[0]
-            h, cb = struct.unpack("<I?", raw[76:81])
-            if op in coins or h > height or not 0 <= value <= MAX_MONEY:
+            raw = data[pos:pos + clen]
+            pos += clen
+            op, coin = parse_coin(raw)
+            if op in coins or coin.height > height or not 0 <= coin.value <= MAX_MONEY:
                 raise ValueError("snapshot file is inconsistent")
-            coins[op] = Coin(value, raw[44:76], h, cb)
-            total += value
-            mh.insert(raw)
+            coins[op] = coin
+            total += coin.value
+            mh.insert(prefix + raw)
         if total > MAX_MONEY:
             raise ValueError("snapshot file is inconsistent")
         return {"chain_id": chain_id, "hash": block_hash, "height": height, "coins": coins,
@@ -1134,7 +1260,7 @@ class Chain:
     def import_utxo_snapshot(self, path: str) -> BlockIndex:
         """Verify a snapshot against the header it names and adopt it as our state.
         Requires the header to be known (sync headers first) and to extend our tip."""
-        snap = self.read_utxo_snapshot(path)
+        snap = self.read_utxo_snapshot(path, self.params)
         with self.lock:
             if snap["chain_id"] != self.params.chain_id:
                 raise ValueError("snapshot is for another network")
@@ -1153,7 +1279,7 @@ class Chain:
             state = (generated, generated - snap["total"], target.header.fee)
             # --- commit
             if self.datadir:
-                store = BlockStore(os.path.join(self.datadir, HEADERS_FILE))
+                store = BlockStore(os.path.join(self.datadir, HEADERS_FILE), self.params.rules)
                 if os.path.exists(store.path):
                     os.remove(store.path)
                 store.open()

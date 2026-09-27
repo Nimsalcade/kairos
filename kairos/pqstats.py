@@ -18,11 +18,17 @@ from statistics import median
 
 from .block import HEADER_SIZE
 from .crypto import LAMPORT_PUB_LEN, LAMPORT_SIG_LEN
-from .tx import (OutPoint, Transaction, TxIn, TxOut, WIT_LAMPORT, WIT_SCHNORR,
-                 make_coinbase, write_varint)
+from .tx import (OutPoint, Transaction, TxIn, TxOut, WIT_LAMPORT, WIT_SCHNORR, WIT_SLHDSA,
+                 SLHDSA_WITNESS_LEN, make_coinbase, write_varint)
 
 LAMPORT_WITNESS = 1 + 32 + LAMPORT_PUB_LEN + LAMPORT_SIG_LEN     # 24,609 bytes
 SCHNORR_WITNESS = 1 + 32 + 32 + 64                               # 129 bytes
+SLHDSA_WITNESS = SLHDSA_WITNESS_LEN                              # 7,953 bytes (rules 2)
+
+
+def pq_witness(params) -> int:
+    """The post-quantum witness of a network's rule set."""
+    return SLHDSA_WITNESS if params.rules >= 2 else LAMPORT_WITNESS
 MAX_TX_BYTES = 950_000          # the wallet's cap per transaction (wallet.Wallet.MAX_TX_BYTES)
 MAX_RANGE = 20_000              # blocks per call, so the RPC never holds the chain lock for long
 
@@ -100,7 +106,8 @@ def measure(chain, start: int, end: int) -> dict:
         raise ValueError(f"at most {MAX_RANGE} blocks per call")
     limit = chain.params.max_block_size
     fills, pq_sizes, pq_inputs, sch_sizes, busy = [], [], [], [], []
-    missing = lamport_in = schnorr_in = mixed = 0
+    missing = lamport_in = schnorr_in = mixed = commitments = 0
+    pq_kind = bytes([WIT_SLHDSA if chain.params.rules >= 2 else WIT_LAMPORT])
     for h in range(start, end + 1):
         blk = chain.blocks.get(chain.active[h].hash)
         if blk is None:            # below a fast-sync snapshot: header only
@@ -110,10 +117,11 @@ def measure(chain, start: int, end: int) -> dict:
         n_pq = 0
         for tx in blk.txs[1:]:
             kinds = {i.witness[:1] for i in tx.inputs}
-            lam = sum(1 for i in tx.inputs if i.witness[:1] == bytes([WIT_LAMPORT]))
+            lam = sum(1 for i in tx.inputs if i.witness[:1] == pq_kind)
             lamport_in += lam
             schnorr_in += sum(1 for i in tx.inputs if i.witness[:1] == bytes([WIT_SCHNORR]))
-            if kinds == {bytes([WIT_LAMPORT])}:
+            commitments += sum(1 for o in tx.outputs if len(o.address) == 33 and o.address[0] == 0x80)
+            if kinds == {pq_kind}:
                 pq_sizes.append(tx.size)
                 pq_inputs.append(len(tx.inputs))
                 n_pq += 1
@@ -133,7 +141,8 @@ def measure(chain, start: int, end: int) -> dict:
             "pq_active_at_end": chain.pq_active(chain.active[end]),
             "pq_txs": _summary(pq_sizes), "pq_inputs_per_tx": _summary(pq_inputs),
             "observed_bytes_per_pq_input": per_input,
-            "model_bytes_per_pq_input": input_bytes(LAMPORT_WITNESS),
+            "model_bytes_per_pq_input": input_bytes(pq_witness(chain.params)),
             "schnorr_txs": _summary(sch_sizes), "mixed_txs": mixed,
-            "inputs": {"lamport": lamport_in, "schnorr": schnorr_in},
+            "inputs": {("slhdsa" if chain.params.rules >= 2 else "lamport"): lamport_in, "schnorr": schnorr_in},
+            "commitments": commitments,
             "block_fill": fs, "blocks_with_pq_txs": busy[:500]}

@@ -13,6 +13,17 @@ Kairos transactions.
    what fee it leaves, without needing the previous transactions (the problem
    Bitcoin fixed with BIP143 for hardware wallets).
  * Optional expiry height: stuck transactions die instead of haunting mempools.
+
+Rules 2 (testnet 3, mainnet; transaction version 2) change the outputs and the
+post-quantum key, see docs/rules-v2.md:
+ * An output script is 33 bytes: a version byte and a 32-byte program.
+   Version 0 pays to H("Kairos/address2", schnorr_pubkey || slh_leaf), where
+   slh_leaf = H("Kairos/slh-leaf", slhdsa_pubkey || salt). Version 0x80 is a
+   spend commitment (value 0, never a coin). Versions 1..0x7F are reserved for
+   future soft forks and are spendable with any witness; 0x81..0xFF are invalid.
+ * The post-quantum key is SLH-DSA-SHA2-128s (FIPS 205). It is stateless, so a
+   wallet can use one key for all its addresses; the per-address salt keeps
+   the addresses unlinkable until an SLH-DSA spend reveals the key.
 """
 import io
 import struct
@@ -21,12 +32,24 @@ from typing import List
 
 from .crypto import (tagged_hash, schnorr_verify, lamport_verify, pq_root,
                      LAMPORT_PUB_LEN, LAMPORT_SIG_LEN)
+from . import slhdsa
 
 NULL_HASH = b"\x00" * 32
 COINBASE_INDEX = 0xFFFFFFFF
 
 WIT_SCHNORR = 0x01
-WIT_LAMPORT = 0x02
+WIT_LAMPORT = 0x02              # rules 1 only
+WIT_SLHDSA = 0x03               # rules 2 only
+
+TX_VERSION_V1 = 1
+TX_VERSION_V2 = 2               # rules 2: outputs carry a version byte
+
+OUT_KEY = 0x00                  # rules 2 output versions
+OUT_COMMIT = 0x80
+OUT_FUTURE_MAX = 0x7F           # 1..0x7F: reserved for soft forks, anyone can spend
+
+SCHNORR_WITNESS_LEN = 1 + 32 + 32 + 64
+SLHDSA_WITNESS_LEN = 1 + 32 + slhdsa.PK_BYTES + 32 + slhdsa.SIG_BYTES     # 7,953
 
 
 # ------------------------------------------------------------ serialization
@@ -76,6 +99,27 @@ def make_address(schnorr_pubkey: bytes, pqroot: bytes) -> bytes:
     return tagged_hash("Kairos/address", schnorr_pubkey + pqroot)
 
 
+def slh_leaf(slh_pubkey: bytes, salt: bytes) -> bytes:
+    return tagged_hash("Kairos/slh-leaf", slh_pubkey + salt)
+
+
+def make_script(schnorr_pubkey: bytes, leaf: bytes) -> bytes:
+    """Rules 2: the 33-byte script of a version-0 (key) output."""
+    return bytes([OUT_KEY]) + tagged_hash("Kairos/address2", schnorr_pubkey + leaf)
+
+
+def commit_script(commitment: bytes) -> bytes:
+    return bytes([OUT_COMMIT]) + commitment
+
+
+def spend_commitment(txid: bytes, schnorr_pubkeys) -> bytes:
+    """What must be on chain `reveal_delay` blocks before a Schnorr spend once the
+    quantum switch is active: the transaction's id and every Schnorr key it will
+    reveal, in input order. Without the keys an attacker could not compute it,
+    so it cannot be made in advance by anyone but the owner."""
+    return tagged_hash("Kairos/commit", txid + b"".join(schnorr_pubkeys))
+
+
 # ---------------------------------------------------------------- structures
 
 @dataclass(frozen=True)
@@ -120,7 +164,10 @@ class Transaction:
         return self.body() + b"".join(write_bytes(i.witness) for i in self.inputs)
 
     @classmethod
-    def deserialize(cls, f) -> "Transaction":
+    def deserialize(cls, f, rules: int = 1) -> "Transaction":
+        """`rules` is the network's rule set: it fixes the output script length
+        (32 bytes under rules 1, 33 under rules 2), so a rules-1 node parses every
+        transaction exactly as 0.4 did, whatever its version field says."""
         if isinstance(f, (bytes, bytearray)):
             f = io.BytesIO(f)
         version = struct.unpack("<I", read_exact(f, 4))[0]
@@ -135,7 +182,8 @@ class Transaction:
         n_out = read_varint(f)
         if n_out > 10_000:
             raise ValueError("too many outputs")
-        outs = [TxOut(struct.unpack("<Q", read_exact(f, 8))[0], read_exact(f, 32))
+        script_len = 33 if rules >= 2 else 32
+        outs = [TxOut(struct.unpack("<Q", read_exact(f, 8))[0], read_exact(f, script_len))
                 for _ in range(n_out)]
         expiry = struct.unpack("<I", read_exact(f, 4))[0]
         for i in ins:
@@ -178,11 +226,11 @@ class Transaction:
         return struct.unpack("<I", self.inputs[0].witness[:4])[0]
 
 
-def make_coinbase(height: int, outputs: List[TxOut], extra: bytes = b"") -> Transaction:
+def make_coinbase(height: int, outputs: List[TxOut], extra: bytes = b"", version: int = TX_VERSION_V1) -> Transaction:
     # Height is committed in the coinbase, so no two coinbases can share a txid
     # (Bitcoin needed BIP30/BIP34 to patch this after the fact).
     wit = struct.pack("<I", height) + extra[:96]
-    return Transaction([TxIn(OutPoint(NULL_HASH, COINBASE_INDEX), wit)], outputs)
+    return Transaction([TxIn(OutPoint(NULL_HASH, COINBASE_INDEX), wit)], outputs, 0, version)
 
 
 # ---------------------------------------------------------------- witnesses
@@ -215,3 +263,36 @@ def verify_witness(witness: bytes, address: bytes, sighash: bytes, pq_only: bool
         return (make_address(pk, pq_root(lpub)) == address
                 and lamport_verify(sighash, lpub, sig))
     return False
+
+
+# ------------------------------------------------------ rules 2 witnesses
+
+def schnorr_witness2(pubkey: bytes, leaf: bytes, sig: bytes) -> bytes:
+    return bytes([WIT_SCHNORR]) + pubkey + leaf + sig
+
+
+def slhdsa_witness(pubkey: bytes, slh_pubkey: bytes, salt: bytes, sig: bytes) -> bytes:
+    return bytes([WIT_SLHDSA]) + pubkey + slh_pubkey + salt + sig
+
+
+def verify_witness2(witness: bytes, script: bytes, sighash: bytes):
+    """Check a witness against a rules-2 version-0 script. Returns the revealed
+    Schnorr key for a valid Schnorr spend, b"" for a valid SLH-DSA spend and
+    None if invalid. (The commit-delay-reveal rule is checked by the chain.)"""
+    if not witness or len(script) != 33 or script[0] != OUT_KEY:
+        return None
+    kind = witness[0]
+    if kind == WIT_SCHNORR and len(witness) == SCHNORR_WITNESS_LEN:
+        pk, leaf, sig = witness[1:33], witness[33:65], witness[65:]
+        if make_script(pk, leaf) == script and schnorr_verify(sighash, pk, sig):
+            return pk
+        return None
+    if kind == WIT_SLHDSA and len(witness) == SLHDSA_WITNESS_LEN:
+        pk = witness[1:33]
+        spk = witness[33:33 + slhdsa.PK_BYTES]
+        salt = witness[33 + slhdsa.PK_BYTES:65 + slhdsa.PK_BYTES]
+        sig = witness[65 + slhdsa.PK_BYTES:]
+        if make_script(pk, slh_leaf(spk, salt)) == script and slhdsa.verify(sighash, sig, spk):
+            return b""
+        return None
+    return None

@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from kairos.addrman import AddrMan, parse
 from kairos.chain import Chain
 from kairos.node import Node
-from kairos.params import REGTEST, TESTNET
+from kairos.params import REGTEST, TESTNET2
 from kairos.wallet import Wallet
 
 from test_kairos import wait
@@ -163,7 +163,7 @@ class TestProtocolFloor(unittest.TestCase):
             n.stop()
 
     def test_testnet_ignores_private_addresses_from_peers(self):
-        n = mk(TESTNET, use_seeds=False)
+        n = mk(TESTNET2, use_seeds=False)
         try:
             p = type("P", (), {"proto": 4, "addr_msgs": 0, "ready": True})()
             n._handle(p, {"type": "addr", "addrs": [["10.0.0.1:19333", 0], ["127.0.0.1:19333", 0],

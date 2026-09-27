@@ -57,6 +57,17 @@ class ChainParams:
     checkpoints: tuple = ()                     # ((height, hash_hex), ...) hard-coded by releases
     coinbase_witness_max: int = 100
     seeds: tuple = ()                           # "ip:port" nodes asked for peers on first start
+    # Rule set. 1: testnet 2 (0.4): outputs are a 32-byte Schnorr+Lamport commitment,
+    # and the quantum switch bans Schnorr. 2: testnet 3 and mainnet (0.5): versioned
+    # outputs, Schnorr+SLH-DSA addresses, commit-delay-reveal when the switch is
+    # active, and Bitcoin Core's MuHash3072 (see docs/rules-v2.md).
+    rules: int = 1
+    reveal_delay: int = 100                     # rules 2: blocks a spend commitment must age (D)
+
+    @property
+    def script_len(self) -> int:
+        """Bytes of an output's script: a 32-byte program, plus a version byte in rules 2."""
+        return 32 if self.rules == 1 else 33
 
 
 def subsidy(params: ChainParams, generated: int) -> int:
@@ -127,37 +138,64 @@ def next_base_fee(params: ChainParams, base_fee: int, block_size: int) -> int:
 
 # ------------------------------------------------------------- networks
 
-# The post-quantum emergency switch. Once ACTIVE, elliptic-curve (Schnorr)
-# spends are invalid and only hash-based Lamport spends are accepted.
+# The post-quantum emergency switch. Once ACTIVE: under rules 1, Schnorr spends
+# are invalid and only Lamport spends are accepted; under rules 2, a Schnorr
+# spend needs a commitment at least `reveal_delay` blocks old, made before its
+# key was first revealed, and SLH-DSA spends are always accepted.
 PQ_DEPLOYMENT = Deployment("pq", bit=16, start_height=0, timeout_height=0)
 
 MAINNET = ChainParams(
-    name="main", hrp="krs", chain_id=b"KRS\x01", magic=b"\xf9\x4b\x52\x53",
+    name="main", hrp="krs", chain_id=b"KRS\x02", magic=b"\xf9\x4b\x52\x53",
     pow_limit=(1 << 236) - 1,
     genesis_bits=0x1E0FFFFF,
     genesis_time=1790035200,          # placeholder: re-mined with a fresh message at launch (LAUNCH.md)
-    genesis_nonce=225232,
+    genesis_nonce=356194,
     asert_anchor_bits=0x1D00FFFF,     # block 1 starts at Bitcoin's 2009 "difficulty 1"
     deployments=(PQ_DEPLOYMENT,),
+    rules=2,
 )
 
-# Testnet 2 (0.4.0). The 0.3 testnet was reset because the signature hash and
-# the activation rules changed; testnet coins never had value.
-TESTNET = replace(
+# Testnet 2 (0.4.0), rules 1. Kept, unchanged, for the nodes still running it.
+# The 0.3 testnet was reset because the signature hash and the activation
+# rules changed; testnet coins never had value.
+TESTNET2 = replace(
     MAINNET, name="test", hrp="tkrs", chain_id=b"KRS\x03", magic=b"\x0c\x4b\x52\x53",
     genesis_time=1790208000,          # 2026-09-24T00:00:00Z
     genesis_nonce=406758,
     coinbase_maturity=20,
     asert_anchor_bits=0x1E03FFFF,     # CPU-friendly start; ASERT raises it as miners join
     seeds=("95.179.255.186:19333", "45.76.176.39:19333", "207.246.114.19:19333"),
+    rules=1,
 )
 
+# Testnet 3 (0.5.0), rules 2: the rules mainnet will launch with.
+TESTNET3 = replace(
+    MAINNET, name="test3", hrp="tkr3", chain_id=b"KRS\x04", magic=b"\x0d\x4b\x52\x53",
+    genesis_time=1790553600,          # 2026-09-28T00:00:00Z
+    genesis_nonce=457476,
+    coinbase_maturity=20,
+    asert_anchor_bits=0x1E03FFFF,
+    seeds=("95.179.255.186:19335", "45.76.176.39:19335", "207.246.114.19:19335"),
+)
+
+# Regtest with rules 1 (the 0.4 rules). The conformance vectors and most of the
+# 0.4 test suite run on it.
 REGTEST = replace(
     MAINNET, name="regtest", hrp="krt", chain_id=b"KRT\x01", magic=b"\xfa\x4b\x52\x54",
     pow_limit=(1 << 252) - 1, genesis_bits=0x200FFFFF, no_retarget=True,
     coinbase_maturity=2, genesis_nonce=6, asert_anchor_bits=None,
     deployments=(replace(PQ_DEPLOYMENT, window=8, threshold=6),),
+    rules=1,
 )
 
-NETWORKS = {"main": MAINNET, "test": TESTNET, "regtest": REGTEST}
-DEFAULT_PORTS = {"main": (9333, 9332), "test": (19333, 19332), "regtest": (29333, 29332)}
+# Regtest with rules 2, for development against the mainnet rules.
+REGTEST2 = replace(
+    REGTEST, name="regtest2", hrp="krr", chain_id=b"KRT\x02", magic=b"\xfa\x4b\x52\x55",
+    genesis_nonce=11, rules=2, reveal_delay=5,
+)
+
+TESTNET = TESTNET3                    # what --testnet means from 0.5.0
+
+NETWORKS = {"main": MAINNET, "test3": TESTNET3, "test": TESTNET2, "regtest": REGTEST, "regtest2": REGTEST2}
+DEFAULT_PORTS = {"main": (9333, 9332), "test3": (19335, 19334), "test": (19333, 19332),
+                 "regtest": (29333, 29332), "regtest2": (29335, 29334)}

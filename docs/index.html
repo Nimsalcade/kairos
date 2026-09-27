@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Kairos</title>
-<meta name="description" content="Kairos: a peer-to-peer electronic cash system built to last. Public testnet 2, no sale, no premine.">
+<meta name="description" content="Kairos: a peer-to-peer electronic cash system built to last. Public testnet 3, no sale, no premine.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,300..800&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=JetBrains+Mono:wght@400;500&display=swap">
 <style>
@@ -217,14 +217,14 @@ footer p{max-width:var(--measure)}
       <a href="#join">Run a node</a>
       <a href="#status">Status</a>
     </nav>
-    <div class="foot">testnet 2 · v0.4.1<br>2-minute blocks<br>21,000,000 + tail</div>
+    <div class="foot">testnet 3 · v0.5.0<br>2-minute blocks<br>21,000,000 + tail</div>
   </aside>
 
   <main class="page">
     <header class="top">
       <div class="mark"><span class="coin"></span>Kairos</div>
       <div class="links">
-        <span class="live"><i></i>Testnet 2 live</span>
+        <span class="live"><i></i>Testnet 3</span>
         <a href="https://github.com/Nimsalcade/kairos">GitHub</a>
         <a href="https://github.com/Nimsalcade/kairos/blob/main/docs/kairos-whitepaper.md">Whitepaper</a>
         <a href="https://bitcointalk.org/index.php?topic=5594931.0">Thread</a>
@@ -241,10 +241,10 @@ footer p{max-width:var(--measure)}
           <a class="btn" href="https://github.com/Nimsalcade/kairos/blob/main/docs/kairos-whitepaper.md">Read the whitepaper</a>
         </div>
       </div>
-      <div class="plate rise d4" aria-label="Genesis block of testnet 2">
+      <div class="plate rise d4" aria-label="Genesis block of testnet 3">
         <div class="row">
-          <div class="k">Genesis · testnet 2</div>
-          <div class="hash"><b>000008fa</b>96a695a8e30751146a123e55ee730693362e0acba2c43ce704b73c51</div>
+          <div class="k">Genesis · testnet 3</div>
+          <div class="hash"><b>00000d3a</b>410c9f9539a61552f21e8fe2a7c7b886a0363f3dae4eb959dc37beee</div>
         </div>
         <div class="row">
           <div class="k">Coinbase message</div>
@@ -252,7 +252,7 @@ footer p{max-width:var(--measure)}
         </div>
         <div class="row">
           <div class="kv">
-            <span>time</span><span>2026-09-24 00:00:00 UTC</span>
+            <span>time</span><span>2026-09-28 00:00:00 UTC</span>
             <span>output</span><span>0 KRS, unspendable</span>
             <span>header</span><span>132 bytes</span>
             <span>premine</span><span>none</span>
@@ -271,7 +271,7 @@ footer p{max-width:var(--measure)}
         <div class="r"><div class="h">In Bitcoin</div><div class="h">In Kairos</div></div>
         <div class="r"><div class="was">The block subsidy halves toward zero; long-run security depends entirely on fees.</div><div class="now">Smooth emission with no cliffs that settles into a permanent 0.6 KRS per block, and a burned base fee that lets usage offset it.</div></div>
         <div class="r"><div class="was">Fees are a blind auction that swings by orders of magnitude.</div><div class="now">A per-byte base fee adjusted every block, capped at 12.5% per step, burned rather than paid to miners. The fee for the next block is written into every header.</div></div>
-        <div class="r"><div class="was">A large quantum computer could recover keys from exposed public keys.</div><div class="now">Every address commits to a Schnorr key and a hash-based Lamport key. A built-in signalling mechanism lets the network switch spends to the hash-based key.</div></div>
+        <div class="r"><div class="was">A large quantum computer could recover keys from exposed public keys.</div><div class="now">Every address commits to a Schnorr key and a stateless hash-based key (SLH-DSA, FIPS 205). A built-in switch keeps Schnorr spends safe by commit-delay-reveal, so payments stay small even in an emergency.</div></div>
         <div class="r"><div class="was">A new node must replay every transaction since 2009.</div><div class="now">Every header commits to the full set of unspent coins. A new node verifies a snapshot against proof-of-work and downloads only what came after.</div></div>
         <div class="r"><div class="was">Signatures do not commit to the amounts being spent; hardware wallets needed BIP143 to see what they pay.</div><div class="now">The signature hash commits to the value and address of every coin spent, and to the chain identifier, so signers know what they pay and replay across chains is impossible.</div></div>
         <div class="r"><div class="was">Difficulty retargets every 2016 blocks, which oscillates and invites timestamp games.</div><div class="now">Difficulty adjusts every block on an absolute schedule (ASERT, two-day half-life). Two-minute blocks.</div></div>
@@ -315,21 +315,22 @@ footer p{max-width:var(--measure)}
       </div>
       <div class="two">
         <figure>
-          <img src="figures/fig1-address.svg" alt="A Kairos address commits to a Schnorr public key and the hash of a Lamport public key" width="920" height="420" loading="lazy">
-          <figcaption>An address is the hash of a Schnorr key and a Lamport key root. Neither key is revealed until the coins move.</figcaption>
+          <img src="figures/fig1-address.svg" alt="A Kairos address commits to a Schnorr public key and a hash-based public key" width="920" height="420" loading="lazy">
+          <figcaption>An address is the hash of a Schnorr key and a hash-based key (Lamport on testnet 2, SLH-DSA from testnet 3). Neither key is revealed until the coins move.</figcaption>
         </figure>
         <div class="prose">
           <h3>How the switch works</h3>
-          <p>Miners signal readiness with a bit in the block header. Once 95% of a 2016-block window signals, the change locks in, and one window later it is active: elliptic-curve spends become invalid and every coin can still be spent with its Lamport key. Nobody's coins are frozen and none are stolen.</p>
+          <p>Miners signal readiness with a bit in the block header. Once 95% of a 2016-block window signals, the change locks in, and one window later it is active. From then on a Schnorr spend is valid only if its owner committed to it at least 100 blocks earlier, before the key was ever revealed. A quantum attacker who reads the key from the payment cannot produce such a commitment in time. Every coin can also be spent at once with its SLH-DSA key. Nobody's coins are frozen and none are stolen.</p>
           <p>The switch has a start height of zero and no timeout, so it stays armed for the life of the chain. For the case where miners cannot be trusted to signal in time, an emergency release can fix it at a flag-day height.</p>
           <p>The switch has been rehearsed on testnet 2. Miners locked it in at block 4032, it activated at 6048, and from block 6054 coins moved with Lamport signatures, including a 61-coin payment that filled three quarters of a block. Every transaction was exactly the size the model predicts. That rehearsal also shows the limit: about 81 coins fit in a block, so a hash-based key can rescue coins in an emergency but cannot move a whole economy quickly. <a href="https://github.com/Nimsalcade/kairos/blob/main/docs/rehearsal-testnet2.md">Read the report</a>.</p>
+          <p>Testnet 3 (0.5.0) therefore carries the rules mainnet will launch with: an SLH-DSA key in every address, 3.1 times smaller than Lamport, and commit-delay-reveal, which keeps a payment after the switch at about 260 bytes. Outputs carry a version, so a later signature scheme can arrive as a soft fork. <a href="https://github.com/Nimsalcade/kairos/blob/main/docs/rules-v2.md">Read the rules</a>.</p>
         </div>
       </div>
       <div class="states" aria-label="Deployment states">
         <div><b>DEFINED</b><span>Before the start height. The bit is ignored.</span></div>
         <div><b>STARTED</b><span>Miners signal. Counted per 2016-block window.</span></div>
         <div><b>LOCKED_IN</b><span>1916 of 2016 signalled. Activation is now certain.</span></div>
-        <div><b>ACTIVE</b><span>One window later. Only Lamport spends are valid.</span></div>
+        <div><b>ACTIVE</b><span>One window later. Schnorr spends need a commitment 100 blocks old; SLH-DSA spends are always valid.</span></div>
       </div>
     </section>
 
@@ -358,8 +359,8 @@ footer p{max-width:var(--measure)}
     <section id="join">
       <div class="sec-head">
         <div class="eyebrow">Run a node</div>
-        <h2>Join testnet 2 in three commands</h2>
-        <p class="lede">Python 3.9 or newer, macOS or Linux. Your node finds the network through the built-in seed nodes. The first start creates an encrypted wallet and prints a backup code; write it down.</p>
+        <h2>Join testnet 3 in three commands</h2>
+        <p class="lede">Python 3.9 or newer, macOS or Linux. Your node finds the network through the built-in seed nodes. The first start creates an encrypted wallet and prints recovery words; write them down.</p>
       </div>
       <div class="term" id="term">
         <button class="copy" id="copybtn" type="button" aria-label="Copy commands">Copy</button>
@@ -369,15 +370,16 @@ footer p{max-width:var(--measure)}
         <div class="c"># leave out --mine to only validate and relay; add --signal pq to signal for the quantum switch</div>
       </div>
       <div class="seeds" aria-label="Seed nodes">
-        <div><b>Frankfurt</b><code>95.179.255.186:19333</code></div>
-        <div><b>Singapore</b><code>45.76.176.39:19333</code></div>
-        <div><b>Miami</b><code>207.246.114.19:19333</code></div>
+        <div><b>Frankfurt</b><code>95.179.255.186:19335</code></div>
+        <div><b>Singapore</b><code>45.76.176.39:19335</code></div>
+        <div><b>Miami</b><code>207.246.114.19:19335</code></div>
       </div>
       <div class="cmds">
         <div><code>info</code><span>Height, supply, base fee, soft-fork state</span></div>
         <div><code>balance</code><span>Your coins; rewards unlock after 20 blocks</span></div>
         <div><code>address</code><span>A fresh address to receive coins</span></div>
-        <div><code>send &lt;addr&gt; &lt;amount&gt;</code><span>Pay someone; Lamport-signed once the switch is active</span></div>
+        <div><code>send &lt;addr&gt; &lt;amount&gt;</code><span>Pay someone; SLH-DSA-signed once the switch is active</span></div>
+        <div><code>sendcommitted &lt;addr&gt; &lt;amount&gt;</code><span>Pay by commit-delay-reveal: small, and safe after the switch</span></div>
         <div><code>utxo export</code><span>Write a snapshot other nodes can start from</span></div>
         <div><code>rpc getdeploymentinfo</code><span>Watch the signalling count for the quantum switch</span></div>
       </div>
@@ -398,6 +400,7 @@ footer p{max-width:var(--measure)}
         <div class="gate done"><i></i><span>UTXO snapshot export and import, verified against the header commitment</span></div>
         <div class="gate done"><i></i><span>Public testnet on three continents; 82 tests on two signature backends</span></div>
         <div class="gate done"><i></i><span>Quantum-emergency rehearsal on the live testnet: active at block 6048, Lamport payments mined</span></div>
+        <div class="gate done"><i></i><span>Mainnet rules on testnet 3: SLH-DSA keys, commit-delay-reveal, versioned outputs, Core's MuHash</span></div>
         <div class="gate"><i></i><span>Independent consensus and cryptography audits</span></div>
         <div class="gate"><i></i><span>A second implementation, cross-tested against this one</span></div>
         <div class="gate"><i></i><span>At least six months of public testnet with no consensus bug in the final ninety days</span></div>
@@ -409,7 +412,7 @@ footer p{max-width:var(--measure)}
       <div class="links">
         <a href="https://github.com/Nimsalcade/kairos">Source</a>
         <a href="https://github.com/Nimsalcade/kairos/blob/main/docs/kairos-whitepaper.md">Whitepaper</a>
-        <a href="https://github.com/Nimsalcade/kairos/releases/tag/v0.4.1">Release 0.4.1</a>
+        <a href="https://github.com/Nimsalcade/kairos/releases">Releases</a>
         <a href="https://github.com/Nimsalcade/kairos/blob/main/CHANGELOG.md">Changelog</a>
         <a href="https://bitcointalk.org/index.php?topic=5594931.0">Announcement thread</a>
       </div>
