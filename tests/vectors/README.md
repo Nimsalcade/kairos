@@ -26,6 +26,7 @@ produces, and that seven deliberately injected consensus bugs are each caught.
 | `chains/flagday.json` | `pq_emergency_height` activation without signalling |
 | `chains/auxpow.json` | Merge-mined blocks, the start height, and four broken proofs |
 | `chains/checkpoints.json` | A checkpoint mismatch and a fork below the last checkpoint |
+| `chains/rules2.json` | Rules 2 (testnet 3, mainnet; `docs/rules-v2.md`): version-2 transactions, output versions (reserved, commitment, invalid), commitment and reveal records, a future-version output spent with an empty witness, and commit-delay-reveal after activation: no commitment, a commitment too young, a key revealed before its commitment, a pre-activation commitment used afterwards, and SLH-DSA spends |
 | `functions.json` | The pure functions, for porting one piece at a time (below) |
 
 ## Chain vector format
@@ -121,6 +122,15 @@ present:
 | `coinbase pays too much` | at most subsidy + fees − burns | core |
 | `utxo_root mismatch` | MuHash3072 of the UTXO set after the block | core |
 | `base fee mismatch` | header `fee` = next base fee | core |
+| `unknown tx version` (rules 2) | version 2 only, coinbase included | rules2 |
+| `unknown output version` | output versions 0x81 and above | rules2 |
+| `commitment output must have value 0` | version 0x80 outputs | rules2 |
+| `duplicate commitment` | a commitment already recorded, or twice in one transaction | rules2 |
+| `missing or spent input` (rules 2) | also any input naming a record (index ≥ 0xFFFFFF00) | rules2 |
+| `bad coinbase output` (rules 2) | the coinbase pays version-0 outputs only | rules2 |
+| `Schnorr spend without a commitment (quantum switch active)` | after activation | rules2 |
+| `commitment younger than D blocks` | `reveal_delay` | rules2 |
+| `key was revealed before its commitment` | reveal record height > commitment height | rules2 |
 
 Not covered, on purpose:
 
@@ -132,6 +142,12 @@ Not covered, on purpose:
 - Mempool policy (`conflicts`, `mempool full`) is not consensus.
 
 ## Function vectors (`functions.json`)
+
+The `rules2` section adds rules-2 address scripts (SLH-DSA leaf and program,
+bech32m for `krs`, `tkr3` and `krr`), spend commitments, Core's MuHash3072
+with the Kairos element prefix, a version-2 transaction's txid and sighash,
+and Schnorr and SLH-DSA witness checks. SLH-DSA itself is tested against
+NIST's ACVP vectors in `tests/data/slhdsa_sha2_128s_acvp.json`.
 
 Each key is a list of cases with inputs and the expected output:
 

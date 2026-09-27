@@ -5,6 +5,14 @@ Keys are derived deterministically from a single 32-byte seed, so one backup
 restores everything. Each receive address gets its own Schnorr key AND its own
 Lamport one-time key; the Lamport key is never revealed unless used.
 
+Rules-2 networks (testnet 3, mainnet) replace the Lamport key with one
+SLH-DSA key per wallet (per account for HD wallets): it is stateless, so it
+can sign any number of times. Each address commits to it through its own salt,
+so addresses stay unlinkable until an SLH-DSA spend reveals the key. Once the
+quantum switch is active a payment either signs with SLH-DSA (immediate, about
+8 KB per input) or goes through commit-delay-reveal (two transactions, cheap
+Schnorr inputs, `reveal_delay` blocks apart); see create_commit_reveal.
+
 Address hygiene: every mined block, every payment and every change output goes
 to a fresh address, so a Schnorr public key is revealed on the wire at most
 once (when its coins are spent). A restored wallet finds its addresses again
@@ -22,16 +30,20 @@ from . import hd as _hd
 from .crypto import (tagged_hash, pubkey_from_seckey, schnorr_sign, lamport_keygen,
                      lamport_sign, pq_root, bech32m_encode, bech32m_decode, N,
                      LAMPORT_PUB_LEN, LAMPORT_SIG_LEN)
+from . import slhdsa
 from .params import ChainParams, COIN
-from .tx import (Transaction, TxIn, TxOut, OutPoint, make_address,
-                 schnorr_witness, lamport_witness)
+from .tx import (Transaction, TxIn, TxOut, OutPoint, make_address, make_script, slh_leaf,
+                 schnorr_witness, lamport_witness, slhdsa_witness, commit_script, spend_commitment,
+                 SLHDSA_WITNESS_LEN, SCHNORR_WITNESS_LEN, OUT_KEY, TX_VERSION_V1, TX_VERSION_V2)
 
 GAP_LIMIT = 20
 
 
 class Key:
     def __init__(self, seed: Optional[bytes], i: int, seckey: Optional[bytes] = None,
-                 pq_seed: Optional[bytes] = None):
+                 pq_seed: Optional[bytes] = None, slh=None):
+        """`slh` is the wallet's (secret, public) SLH-DSA key on rules-2 networks;
+        without it the key is a rules-1 Schnorr+Lamport key."""
         if seckey is None:                     # legacy (0.4) derivation
             ib = i.to_bytes(4, "big")
             d = int.from_bytes(tagged_hash("Kairos/wallet/sk", seed + ib), "big") % (N - 1) + 1
@@ -41,8 +53,14 @@ class Key:
         self.pubkey = pubkey_from_seckey(self.seckey)
         self._pq_seed = pq_seed
         self._lamport = None
-        self.pqroot = pq_root(self.lamport[1])
-        self.address = make_address(self.pubkey, self.pqroot)
+        if slh is None:
+            self.pqroot = pq_root(self.lamport[1])
+            self.address = make_address(self.pubkey, self.pqroot)
+        else:
+            self.slh_sk, self.slh_pk = slh
+            self.salt = tagged_hash("Kairos/wallet/slh-salt", pq_seed)
+            self.pqroot = slh_leaf(self.slh_pk, self.salt)    # what a Schnorr witness carries
+            self.address = make_script(self.pubkey, self.pqroot)
 
     @property
     def lamport(self):
@@ -75,6 +93,9 @@ class Wallet:
         self._enc = None             # (salt, derived key) cached so saves do not re-run scrypt
         self.pq_revealed = set()     # key indices whose Lamport key has signed (never again)
         self.used = set()            # key indices that have received coins on chain
+        self.pending: List[dict] = []    # rules 2: commit-delay-reveal payments not yet revealed
+        self.rules2 = params.rules >= 2
+        self._slh = None
         self.chain = None
         self.keys: List[Key] = []
         self.by_addr: Dict[bytes, Key] = {}
@@ -160,6 +181,7 @@ class Wallet:
         w._enc = enc
         w.pq_revealed = set(d.get("pq_revealed", []))
         w.used = set(d.get("used", []))
+        w.pending = list(d.get("pending", []))
         if scheme != "legacy" and fmt < cls.FORMAT_HD:
             w.save()            # an HD wallet written before format 3 existed: 0.4.1 must refuse it
         return w
@@ -212,6 +234,8 @@ class Wallet:
             return
         d = {"format": self.FORMAT_LEGACY, "network": self.params.name, "n_keys": len(self.keys),
              "pq_revealed": sorted(self.pq_revealed), "used": sorted(self.used)}
+        if self.pending:
+            d["pending"] = self.pending
         encrypt = bool(getattr(self, "passphrase", None))
         if encrypt:
             n, r, p = self.KDF_N, self.KDF_R, self.KDF_P
@@ -285,11 +309,29 @@ class Wallet:
         return w
 
     # ------------------------------------------------------ addresses
+    @property
+    def slh(self):
+        """Rules 2: the wallet's SLH-DSA key pair (secret, public), derived from the
+        seed (HD wallets: from the hardened account key, which an xpub does not reveal)."""
+        if self._slh is None:
+            if self.scheme == "bip32":
+                tag, secret = "Kairos/hd/slh", self._account_key.secret
+            else:
+                tag, secret = "Kairos/wallet/slh", self.seed
+            material = tagged_hash(tag, secret + b"\x00") + tagged_hash(tag, secret + b"\x01")
+            self._slh = slhdsa.keygen(material[:3 * slhdsa.N])
+        return self._slh
+
     def _derive(self) -> Key:
         i = len(self.keys)
+        slh = self.slh if self.rules2 else None
         if self.scheme == "bip32":
             child = self._chain_key.derive(i)
-            k = Key(None, i, child.secret, _hd.pq_seed(child.secret))
+            k = Key(None, i, child.secret, _hd.pq_seed(child.secret), slh)
+        elif slh is not None:                  # the legacy derivation, with an SLH-DSA leaf
+            ib = i.to_bytes(4, "big")
+            d = int.from_bytes(tagged_hash("Kairos/wallet/sk", self.seed + ib), "big") % (N - 1) + 1
+            k = Key(None, i, d.to_bytes(32, "big"), tagged_hash("Kairos/wallet/pq", self.seed + ib), slh)
         else:
             k = Key(self.seed, i)
         self.keys.append(k)
@@ -322,8 +364,10 @@ class Wallet:
 
     def decode(self, s: str) -> bytes:
         a = bech32m_decode(self.params.hrp, s)
-        if len(a) != 32:
+        if len(a) != self.params.script_len:
             raise ValueError("bad address length")
+        if self.rules2 and a[0] != OUT_KEY:
+            raise ValueError("address version not supported by this wallet")
         return a
 
     # ------------------------------------------------------ chain tracking
@@ -390,11 +434,13 @@ class Wallet:
         return {"spendable": spendable, "immature": total - spendable}
 
     # ------------------------------------------------------ spending
-    # A transaction may not exceed half the block size (consensus). A Lamport
-    # witness is about 24.6 KB, so a post-quantum payment that needs many
-    # inputs is split into several transactions, each under this wallet cap.
+    # A transaction may not exceed half the block size (consensus). Post-quantum
+    # witnesses are large (Lamport about 24.6 KB, SLH-DSA about 8 KB), so a
+    # post-quantum payment that needs many inputs is split into several
+    # transactions, each under this wallet cap.
     MAX_TX_BYTES = 950_000
     DUST = 1_000                  # change smaller than this is left to the miner
+    REVEAL_FEE_MARGIN = 4         # a revealed payment pays this multiple of today's base fee
 
     def create_tx(self, chain, to: bytes, amount: int, tip_per_byte: int = 1,
                   expiry_blocks: int = 0, post_quantum: Optional[bool] = None) -> Transaction:
@@ -405,16 +451,22 @@ class Wallet:
             raise ValueError(f"payment needs {len(txs)} transactions; use create_txs")
         return txs[0]
 
+    def _free_coins(self, chain):
+        """Spendable coins not already spent in the mempool or reserved by a pending reveal."""
+        reserved = {OutPoint(bytes.fromhex(t), i) for p in self.pending for t, i in p["inputs"]}
+        return {op: c for op, c in self.coins(chain).items()
+                if op not in chain.mempool_spends and op not in reserved}
+
     def create_txs(self, chain, to: bytes, amount: int, tip_per_byte: int = 1,
                    expiry_blocks: int = 0, post_quantum: Optional[bool] = None) -> List[Transaction]:
-        """Transactions paying `amount` to `to` in total. Uses the Lamport path
-        automatically once the quantum switch is active on `chain`, unless
+        """Transactions paying `amount` to `to` in total. Uses the post-quantum
+        path automatically once the quantum switch is active on `chain`, unless
         `post_quantum` says otherwise. Schnorr payments are always one
-        transaction; Lamport payments may be several."""
+        transaction; post-quantum payments may be several."""
         if amount <= 0:
             raise ValueError("amount must be positive")
         pq = chain.pq_active(chain.tip) if post_quantum is None else post_quantum
-        coins = {op: c for op, c in self.coins(chain).items() if op not in chain.mempool_spends}
+        coins = self._free_coins(chain)
         base_fee = chain.tip.next_base_fee
         if not pq:
             ordered = sorted(coins.items(), key=lambda kv: -kv[1].value)
@@ -426,12 +478,13 @@ class Wallet:
                 if tx is not None:
                     return [tx]
             raise ValueError("insufficient funds")
-        # Post-quantum: a Lamport key signs exactly one message, so every coin at an
-        # address must be swept in the same transaction. Group by address, fill
-        # transactions up to the size cap, stop once the groups cover the amount.
+        # Post-quantum. Rules 1: a Lamport key signs exactly one message, so every coin
+        # at an address must be swept in the same transaction. Rules 2: SLH-DSA has no
+        # such limit. Group, fill transactions up to the size cap, stop once the groups
+        # cover the amount.
         groups: Dict[bytes, list] = {}
         for op, c in coins.items():
-            groups.setdefault(c.address, []).append((op, c))
+            groups.setdefault(op.serialize() if self.rules2 else c.address, []).append((op, c))
         ordered = sorted(groups.values(), key=lambda g: -sum(c.value for _, c in g))
         cap = self._pq_inputs_per_tx(expiry_blocks)
         plan, cur = [], []
@@ -465,10 +518,18 @@ class Wallet:
         assert left == 0
         return txs
 
+    def _witness_len(self, pq: bool) -> int:
+        if not pq:
+            return SCHNORR_WITNESS_LEN
+        return SLHDSA_WITNESS_LEN if self.rules2 else 1 + 32 + LAMPORT_PUB_LEN + LAMPORT_SIG_LEN
+
+    def _tx_version(self) -> int:
+        return TX_VERSION_V2 if self.rules2 else TX_VERSION_V1
+
     def _size(self, selected, n_outputs: int, expiry_blocks: int, pq: bool) -> int:
-        wit_len = (1 + 32 + LAMPORT_PUB_LEN + LAMPORT_SIG_LEN) if pq else (1 + 32 + 32 + 64)
-        return Transaction([TxIn(op, b"\x00" * wit_len) for op, _ in selected],
-                           [TxOut(1, b"\x00" * 32)] * n_outputs, 1 if expiry_blocks else 0).size
+        return Transaction([TxIn(op, b"\x00" * self._witness_len(pq)) for op, _ in selected],
+                           [TxOut(1, b"\x00" * self.params.script_len)] * n_outputs,
+                           1 if expiry_blocks else 0, self._tx_version()).size
 
     def _pq_inputs_per_tx(self, expiry_blocks: int) -> int:
         one = self._size([(OutPoint(b"\x00" * 32, 0), None)], 2, expiry_blocks, True)
@@ -482,28 +543,43 @@ class Wallet:
         return sum(sum(c.value for _, c in sel) - rate * self._size(sel, 2, expiry_blocks, True) for sel in plan)
 
     def _build(self, chain, selected, to, amount, total, base_fee, tip, expiry_blocks, pq):
-        """A signed transaction spending exactly `selected`, or None if they do not
-        cover `amount` plus fees. Change below DUST is left to the miner."""
+        return self._assemble(chain, selected, [TxOut(amount, to)], total, base_fee + tip, expiry_blocks, pq)
+
+    def _covers(self, selected, outs, total, rate, pq) -> bool:
+        """Do `selected` pay for `outs` and the fee, without change?"""
+        size = Transaction([TxIn(op, b"\x00" * self._witness_len(pq)) for op, _ in selected], list(outs),
+                           0, self._tx_version()).size
+        return total - sum(o.value for o in outs) - rate * size >= 0
+
+    def _assemble(self, chain, selected, outs, total, rate, expiry_blocks, pq, sign=True):
+        """A signed transaction spending exactly `selected` into `outs` plus change,
+        or None if they do not cover the outputs plus fees. Change below DUST is
+        left to the miner."""
         exp = chain.height + expiry_blocks if expiry_blocks else 0
-        rate = base_fee + tip
+        paid = sum(o.value for o in outs)
+        wl = self._witness_len(pq)
+
+        def size(extra):
+            return Transaction([TxIn(op, b"\x00" * wl) for op, _ in selected],
+                               outs + [TxOut(1, b"\x00" * self.params.script_len)] * extra,
+                               exp, self._tx_version()).size
         # Witness sizes are fixed, so the fee follows from the input and output
         # counts alone and the transaction is signed exactly once. (A Lamport key
         # must never sign two different messages.)
-        fee_one = rate * self._size(selected, 1, expiry_blocks, pq)
-        excess = total - amount - fee_one
+        excess = total - paid - rate * size(0)
         if excess < 0:
             return None
-        outs = [TxOut(amount, to)]
+        outs = list(outs)
         if excess >= self.DUST:
-            change = total - amount - rate * self._size(selected, 2, expiry_blocks, pq)
+            change = total - paid - rate * size(1)
             if change >= self.DUST:
                 change_key = self.keys[self._unused_index()]     # fresh, never-revealed key
                 self.used.add(self.keys.index(change_key))       # reserve it now
                 self.save()
                 outs.append(TxOut(change, change_key.address))
-        wit_len = (1 + 32 + LAMPORT_PUB_LEN + LAMPORT_SIG_LEN) if pq else (1 + 32 + 32 + 64)
-        tx = Transaction([TxIn(op, b"\x00" * wit_len) for op, _ in selected], outs, exp)
-        self._sign(tx, selected, pq)
+        tx = Transaction([TxIn(op, b"\x00" * wl) for op, _ in selected], outs, exp, self._tx_version())
+        if sign:
+            self._sign(tx, selected, pq)
         return tx
 
     def _sign(self, tx: Transaction, selected, pq: bool):
@@ -511,7 +587,7 @@ class Wallet:
             raise RuntimeError("refusing to sign on mainnet without libsecp256k1: "
                                "pip install coincurve")
         sh = tx.sighash(self.params.chain_id, [(c.value, c.address) for _, c in selected])
-        if pq:
+        if pq and not self.rules2:
             # Record every one-time key as spent BEFORE any signature exists, so a
             # crash between signing and saving can never lead to a second signature.
             idxs = []
@@ -523,15 +599,85 @@ class Wallet:
                 idxs.append(i)
             self.pq_revealed.update(idxs)
             self.save()
+        slh_sig = None
         for inp, (op, c) in zip(tx.inputs, selected):
             k = self.by_addr[c.address]
-            if pq:
+            if pq and self.rules2:
+                if slh_sig is None:        # one key and one sighash per transaction: sign once
+                    slh_sig = slhdsa.sign(sh, k.slh_sk)
+                inp.witness = slhdsa_witness(k.pubkey, k.slh_pk, k.salt, slh_sig)
+            elif pq:
                 sk, lpub = k.lamport
                 inp.witness = lamport_witness(k.pubkey, lpub, lamport_sign(sh, sk))
                 k._pq_signed = sh
             else:
                 inp.witness = schnorr_witness(k.pubkey, k.pqroot, schnorr_sign(sh, k.seckey, os.urandom(32)))
         tx.invalidate()
+
+    # ------------------------------------------------------ commit-delay-reveal (rules 2)
+    def create_commit_reveal(self, chain, to: bytes, amount: int, tip_per_byte: int = 1):
+        """A payment that stays cheap after the quantum switch: a Schnorr-signed
+        transaction (the reveal) plus a small transaction carrying its commitment.
+        The reveal becomes valid `reveal_delay` blocks after the commitment is mined;
+        the wallet keeps it and `due_reveals` hands it out then. Returns
+        (commit_tx, reveal_tx). The commitment is paid from a separate coin, with
+        SLH-DSA if the switch is active (the only spend that needs no commitment).
+        Works before activation too: a commitment made early is already old enough
+        on the day of an emergency."""
+        if not self.rules2:
+            raise ValueError("commit-delay-reveal needs a rules-2 network")
+        if amount <= 0:
+            raise ValueError("amount must be positive")
+        pq = chain.pq_active(chain.tip)
+        base_fee = chain.tip.next_base_fee
+        coins = self._free_coins(chain)
+        # only coins whose key has never been revealed can take the Schnorr path
+        fresh = sorted(((op, c) for op, c in coins.items() if not chain.key_revealed(c.address)),
+                       key=lambda kv: -kv[1].value)
+        rate = base_fee * self.REVEAL_FEE_MARGIN + tip_per_byte
+        pay = [TxOut(amount, to)]
+        selected = []
+        for op, c in fresh:
+            selected.append((op, c))
+            if self._covers(selected, pay, sum(x.value for _, x in selected), rate, False):
+                break
+        else:
+            raise ValueError("insufficient funds in coins whose keys are still unrevealed")
+        reveal = self._assemble(chain, selected, pay, sum(x.value for _, x in selected), rate, 0, False)
+        c_hash = spend_commitment(reveal.txid, [self.by_addr[c.address].pubkey for _, c in selected])
+        used = {op for op, _ in selected}
+        funding = sorted(((op, c) for op, c in coins.items() if op not in used), key=lambda kv: kv[1].value)
+        marker = [TxOut(0, commit_script(c_hash))]
+        pick = next(((op, c) for op, c in funding
+                     if self._covers([(op, c)], marker, c.value, base_fee + tip_per_byte, pq)), None)
+        if pick is None:
+            raise ValueError("no separate coin to pay for the commitment")
+        commit = self._assemble(chain, [pick], marker, pick[1].value, base_fee + tip_per_byte, 0, pq)
+        self.pending.append({"reveal": reveal.serialize().hex(), "commit": commit.serialize().hex(),
+                             "commitment": c_hash.hex(),
+                             "inputs": [[op.txid.hex(), op.index] for op, _ in selected]})
+        self.save()
+        return commit, reveal
+
+    def due_reveals(self, chain):
+        """What a node should broadcast now: reveals whose commitment is old
+        enough, and commitments not yet mined. Finished payments are dropped."""
+        out, keep = [], []
+        next_height = chain.height + 1
+        for p in self.pending:
+            reveal = Transaction.deserialize(bytes.fromhex(p["reveal"]), 2)
+            if not any(i.prev in chain.utxos for i in reveal.inputs):
+                continue                                   # revealed and mined (or spent otherwise)
+            keep.append(p)
+            h = chain.commitment_height(bytes.fromhex(p["commitment"]))
+            if h is None:
+                out.append(Transaction.deserialize(bytes.fromhex(p["commit"]), 2))
+            elif next_height - h >= self.params.reveal_delay:
+                out.append(reveal)
+        if len(keep) != len(self.pending):
+            self.pending = keep
+            self.save()
+        return out
 
 
 def fmt(motes: int) -> str:

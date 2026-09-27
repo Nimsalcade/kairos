@@ -297,17 +297,26 @@ class TestMainnetGenesis(unittest.TestCase):
     def test_genesis_and_fair_launch(self):
         c = Chain(MAINNET)
         self.assertEqual(c.genesis.hash.hex(),
-                         "00000d5c177c8ee763ea601553a3248f2bbec871c4968770e009edcc32111aea")
+                         "000007dcd76009f6729630744e383645a8a8bb834cc7848b855a7b3a0aa1146d")
         self.assertEqual(c.expected_bits(c.tip), 0x1D00FFFF)
         self.assertIn(b"money should outlive", c.blocks[c.genesis.hash].txs[0].inputs[0].witness)
 
+    def test_testnet3_genesis(self):
+        from kairos.params import TESTNET3, TESTNET2
+        c = Chain(TESTNET3)
+        self.assertEqual(c.genesis.hash.hex(),
+                         "00000d3a410c9f9539a61552f21e8fe2a7c7b886a0363f3dae4eb959dc37beee")
+        self.assertEqual(TESTNET3.rules, 2)
+        self.assertEqual(len({TESTNET3.chain_id, TESTNET2.chain_id, MAINNET.chain_id}), 3)
+        self.assertEqual(len({TESTNET3.magic, TESTNET2.magic, MAINNET.magic}), 3)
+
     def test_testnet2_genesis(self):
-        from kairos.params import TESTNET
-        c = Chain(TESTNET)
+        from kairos.params import TESTNET2
+        c = Chain(TESTNET2)
         self.assertEqual(c.genesis.hash.hex(),
                          "000008fa96a695a8e30751146a123e55ee730693362e0acba2c43ce704b73c51")
-        self.assertNotEqual(TESTNET.chain_id, MAINNET.chain_id)
-        self.assertNotEqual(TESTNET.magic, MAINNET.magic)
+        self.assertNotEqual(TESTNET2.chain_id, MAINNET.chain_id)
+        self.assertNotEqual(TESTNET2.magic, MAINNET.magic)
 
 
 class TestSoftForks(unittest.TestCase):

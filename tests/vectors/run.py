@@ -157,8 +157,39 @@ def check_functions(path=FUNCTIONS):
     for x in v["aux_slot"]:
         eq("aux_slot", expected_index(x["nonce"], x["chain_id"], x["height"]), x["index"],
            (x["nonce"], x["chain_id"], x["height"]))
+    r2 = v["rules2"]
+    from kairos.crypto import MuHash3072
+    from kairos.tx import make_script, slh_leaf, spend_commitment, verify_witness2
+    for x in r2["script"]:
+        leaf = slh_leaf(bytes.fromhex(x["slh_pubkey"]), bytes.fromhex(x["salt"]))
+        eq("rules2.script", leaf.hex(), x["leaf"], "leaf")
+        sc = make_script(bytes.fromhex(x["schnorr_pubkey"]), leaf)
+        eq("rules2.script", sc.hex(), x["script"], "script")
+        for hrp, s in x["bech32m"].items():
+            eq("rules2.script", bech32m_encode(hrp, sc), s, hrp)
+    for x in r2["commitment"]:
+        c = spend_commitment(bytes.fromhex(x["txid"]), [bytes.fromhex(k) for k in x["pubkeys"]])
+        eq("rules2.commitment", c.hex(), x["commitment"], len(x["pubkeys"]))
+    prefix = bytes.fromhex(r2["muhash_prefix"])
+    for x in r2["muhash3072"]:
+        m = MuHash3072()
+        for h in x["insert"]:
+            m.insert(prefix + bytes.fromhex(h))
+        for h in x["remove"]:
+            m.remove(prefix + bytes.fromhex(h))
+        eq("rules2.muhash3072", m.digest().hex(), x["digest"], (len(x["insert"]), len(x["remove"])))
+    t = r2["tx"]
+    tx = Transaction.deserialize(bytes.fromhex(t["hex"]), 2)
+    eq("rules2.tx", tx.txid.hex(), t["txid"], "txid")
+    spent = [(s["value"], bytes.fromhex(s["script"])) for s in t["spent"]]
+    eq("rules2.tx", tx.sighash(bytes.fromhex(t["chain_id"]), spent).hex(), t["sighash"], "sighash")
+    for x in r2["witness"]:
+        r = verify_witness2(bytes.fromhex(x["witness"]), bytes.fromhex(x["script"]), bytes.fromhex(x["sighash"]))
+        got = "invalid" if r is None else ("slhdsa" if r == b"" else "schnorr:" + r.hex())
+        eq("rules2.witness", got, x["result"], x["what"])
     for x in v["genesis"]:
-        eq("genesis", Block.deserialize(bytes.fromhex(x["block"])).hash.hex(), x["hash"], x["network"])
+        rules = 2 if x["network"].endswith("2") else 1
+        eq("genesis", Block.deserialize(bytes.fromhex(x["block"]), rules).hash.hex(), x["hash"], x["network"])
     return n, errs
 
 

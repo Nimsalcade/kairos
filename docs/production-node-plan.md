@@ -101,6 +101,10 @@ Rust node parity-bitcoin was abandoned.
 
 ## 5. Consensus changes to make before the port freezes the rules
 
+Status: all three are part of rules 2 in 0.5.0 (testnet 3, mainnet); see
+`docs/rules-v2.md`. The port targets rules 2, and the `rules2` conformance
+vectors cover them.
+
 Porting is the moment the rules become expensive to change. These are the
 changes worth making on testnet 3 first. Together they form one hard fork,
 which means a new chain:

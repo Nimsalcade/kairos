@@ -19,7 +19,7 @@ HERE = os.path.dirname(__file__)
 sys.path.insert(0, os.path.join(HERE, ".."))
 
 from kairos import hd
-from kairos.params import TESTNET, REGTEST
+from kairos.params import TESTNET2, REGTEST
 from kairos.wallet import Wallet
 
 FROZEN = os.path.join(HERE, "data", "wallet_v0_4_1.py")
@@ -74,32 +74,32 @@ class TestWalletCompatibility(unittest.TestCase):
     def test_0_4_1_refuses_new_hd_wallets(self):
         for pw in (None, PW):
             p = self.path(f"hd-{bool(pw)}.json")
-            w, _ = Wallet.create_hd(TESTNET, p, passphrase=pw, n_keys=3)
+            w, _ = Wallet.create_hd(TESTNET2, p, passphrase=pw, n_keys=3)
             before = read(p)
             with open(p) as f:
                 self.assertEqual(json.load(f)["format"], 3)
             with self.assertRaises(KeyError):
-                Old.load(TESTNET, p, pw)
+                Old.load(TESTNET2, p, pw)
             with self.assertRaises(KeyError):
-                Old.load_or_create(TESTNET, p, pw)
+                Old.load_or_create(TESTNET2, p, pw)
             self.assertEqual(read(p), before)                  # refused, and left untouched
-            self.assertEqual(addrs(Wallet.load(TESTNET, p, pw)), addrs(w))
+            self.assertEqual(addrs(Wallet.load(TESTNET2, p, pw)), addrs(w))
 
     def test_legacy_files_open_both_ways(self):
         for pw in (None, PW):
             p = self.path(f"legacy-{bool(pw)}.json")
-            old = Old(TESTNET, n_keys=3, path=p)
+            old = Old(TESTNET2, n_keys=3, path=p)
             old.passphrase = pw
             old.save()
             with open(p) as f:
                 fields_041 = set(json.load(f))
-            new = Wallet.load(TESTNET, p, pw)                  # 0.4.2 opens a 0.4.1 file
+            new = Wallet.load(TESTNET2, p, pw)                  # 0.4.2 opens a 0.4.1 file
             self.assertEqual((new.scheme, addrs(new)), ("legacy", addrs(old)))
             new.new_address()                                  # ...and saves it
             with open(p) as f:
                 d = json.load(f)
             self.assertEqual((d["format"], set(d)), (2, fields_041))
-            again = Old.load(TESTNET, p, pw)                   # 0.4.1 still opens it
+            again = Old.load(TESTNET2, p, pw)                   # 0.4.1 still opens it
             self.assertEqual(again.seed, old.seed)
             self.assertEqual(addrs(again, 4), addrs(new, 4))
 
@@ -128,14 +128,14 @@ class TestWalletCompatibility(unittest.TestCase):
         for pw in (None, PW):
             p = self.path(f"interim-{bool(pw)}.json")
             seed = self.interim_hd_file(p, pw)
-            right = addrs(Wallet(TESTNET, seed, 3, scheme="bip32"))
-            self.assertNotEqual(addrs(Old.load(TESTNET, p, pw)), right)    # the hazard: wrong addresses
-            w = Wallet.load(TESTNET, p, pw)
+            right = addrs(Wallet(TESTNET2, seed, 3, scheme="bip32"))
+            self.assertNotEqual(addrs(Old.load(TESTNET2, p, pw)), right)    # the hazard: wrong addresses
+            w = Wallet.load(TESTNET2, p, pw)
             self.assertEqual(addrs(w), right)
             with open(p) as f:
                 self.assertEqual(json.load(f)["format"], 3)                # rewritten on first open
             with self.assertRaises(KeyError):
-                Old.load(TESTNET, p, pw)
+                Old.load(TESTNET2, p, pw)
 
     def test_future_formats_and_tampering_are_refused(self):
         p = self.path("future.json")

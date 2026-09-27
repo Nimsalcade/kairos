@@ -33,9 +33,10 @@ from . import crypto
 from .crypto import G, N, P, point_add, point_mul, tagged_hash
 
 HARDENED = 0x80000000
-COIN_TYPE = {"main": 19282, "test": 1, "regtest": 1}
+COIN_TYPE = {"main": 19282, "test": 1, "test3": 1, "regtest": 1, "regtest2": 1}
 VERSIONS = {"main": (0x0488ADE4, 0x0488B21E), "test": (0x04358394, 0x043587CF),
-            "regtest": (0x04358394, 0x043587CF)}             # (private, public): xprv/xpub, tprv/tpub
+            "test3": (0x04358394, 0x043587CF), "regtest": (0x04358394, 0x043587CF),
+            "regtest2": (0x04358394, 0x043587CF)}           # (private, public): xprv/xpub, tprv/tpub
 
 
 # ------------------------------------------------------------ RIPEMD-160

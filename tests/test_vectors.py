@@ -50,6 +50,7 @@ class TestConformanceVectors(unittest.TestCase):
         real_verify, real_subsidy = chainmod.verify_witness, chainmod.subsidy
         real_mtp = chainmod.Chain.median_time_past
         real_sighash, real_state = Transaction.sighash, chainmod.Chain._window_state_after
+        real_commit = chainmod.Chain._check_commitment
 
         def no_floor(p, base, size):
             t = p.target_block_size
@@ -72,6 +73,11 @@ class TestConformanceVectors(unittest.TestCase):
                 Transaction, "sighash", lambda self, cid, spent: real_sighash(self, cid, [(0, a) for _, a in spent])),
             "signalling threshold off by one": mock.patch.object(chainmod.Chain, "_window_state_after",
                                                                  threshold_off_by_one),
+            "rules 2: commitment age off by one": mock.patch.object(
+                chainmod.Chain, "_check_commitment",
+                lambda self, tx, rev, view, h: real_commit(self, tx, rev, view, h + 1)),
+            "rules 2: key reveals not recorded": mock.patch.object(chainmod, "REVEAL_INDEX", 0xFFFFFFF0),
+            "rules 2: MuHash without the Kairos prefix": mock.patch.object(chainmod, "MUHASH2_PREFIX", b""),
         }
         for what, patch in bugs.items():
             with self.subTest(bug=what), patch:

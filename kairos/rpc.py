@@ -168,7 +168,7 @@ class RPCServer:
     def rpc_getpqstats(self, start=None, end=None, coins=None, share=1.0):
         """Post-quantum usage in blocks start..end (default: the last 2016) and how
         long sweeping each count in `coins` would take with `share` of every block."""
-        from .pqstats import measure, sweep_plan
+        from .pqstats import measure, sweep_plan, pq_witness
         end = self.chain.height if end is None else end
         start = max(0, end - 2015) if start is None else start
         for v in (start, end):
@@ -185,7 +185,8 @@ class RPCServer:
             raise RPCError(-8, "share must be in (0, 1]")
         out = measure(self.chain, start, end)
         fee = self.chain.tip.next_base_fee
-        out["sweep"] = [sweep_plan(self.chain.params, c, float(share), base_fee=fee) for c in coins]
+        out["sweep"] = [sweep_plan(self.chain.params, c, float(share), pq_witness(self.chain.params), fee)
+                        for c in coins]
         return out
 
     def rpc_setsignal(self, name, enable=True):
@@ -250,7 +251,7 @@ class RPCServer:
 
     def rpc_sendrawtransaction(self, hexstr):
         try:
-            tx = Transaction.deserialize(bytes.fromhex(hexstr))
+            tx = Transaction.deserialize(bytes.fromhex(hexstr), self.chain.params.rules)
         except ValueError:
             raise RPCError(-22, "TX decode failed")
         try:
@@ -310,7 +311,7 @@ class RPCServer:
         from .crypto import bech32m_decode
         try:
             raw = bech32m_decode(self.chain.params.hrp, str(addr))
-            ok = len(raw) == 32
+            ok = len(raw) == self.chain.params.script_len and (self.chain.params.rules == 1 or raw[0] == 0)
         except (ValueError, IndexError):
             raw, ok = b"", False
         return {"isvalid": ok, "address": addr if ok else None,
@@ -340,8 +341,9 @@ class RPCServer:
 
     def rpc_sendtoaddress(self, addr, amount):
         """Returns the txid. Once the quantum switch is active the wallet signs
-        with Lamport keys automatically; a large payment may then need several
-        transactions, in which case a list of txids is returned."""
+        with its post-quantum key automatically (Lamport on rules 1, SLH-DSA on
+        rules 2); a large payment may then need several transactions, in which
+        case a list of txids is returned."""
         w = self._w()
         try:
             to = w.decode(addr)
@@ -354,6 +356,38 @@ class RPCServer:
         for tx in txs:
             self.node.submit_tx(tx)
         return txs[0].txid.hex() if len(txs) == 1 else [t.txid.hex() for t in txs]
+
+    def rpc_sendcommitted(self, addr, amount):
+        """Rules 2: pay through commit-delay-reveal. Broadcasts a small commitment
+        now; the node broadcasts the (Schnorr-signed, cheap) payment itself once
+        the commitment is `reveal_delay` blocks old. Works before and after the
+        quantum switch."""
+        w = self._w()
+        try:
+            to = w.decode(addr)
+        except ValueError:
+            raise RPCError(-5, "invalid address")
+        try:
+            commit, reveal = w.create_commit_reveal(self.chain, to, _amount(amount))
+        except ValueError as e:
+            raise RPCError(-6, str(e))
+        self.node.submit_tx(commit)
+        return {"commit_txid": commit.txid.hex(), "reveal_txid": reveal.txid.hex(),
+                "reveal_delay": self.chain.params.reveal_delay}
+
+    def rpc_listpending(self):
+        """Commit-delay-reveal payments this wallet has not finished."""
+        from .tx import Transaction
+        w = self._w()
+        out = []
+        for p in w.pending:
+            reveal = Transaction.deserialize(bytes.fromhex(p["reveal"]), 2)
+            h = self.chain.commitment_height(bytes.fromhex(p["commitment"]))
+            out.append({"reveal_txid": reveal.txid.hex(),
+                        "commit_txid": Transaction.deserialize(bytes.fromhex(p["commit"]), 2).txid.hex(),
+                        "commitment_height": h,
+                        "reveal_from_height": None if h is None else h + self.chain.params.reveal_delay})
+        return out
 
     # ------------------------------------------------------------ merge mining
     def rpc_createauxblock(self, address):

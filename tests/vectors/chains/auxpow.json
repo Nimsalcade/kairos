@@ -30,7 +30,9 @@
   "mm_chain_id": 19282,
   "auxpow_start_height": 3,
   "checkpoints": [],
-  "coinbase_witness_max": 100
+  "coinbase_witness_max": 100,
+  "rules": 1,
+  "reveal_delay": 100
  },
  "genesis": "02f6018af3d28f4d725930e995a10ec88273f845e8603efe538fbaba5304f784",
  "steps": [

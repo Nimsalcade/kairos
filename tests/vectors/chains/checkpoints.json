@@ -35,7 +35,9 @@
     "0e02d835dd6c7a2bf8d41c0ce498d3c1ffdc2bcf22bd4250cdfdadc8c31d4a29"
    ]
   ],
-  "coinbase_witness_max": 100
+  "coinbase_witness_max": 100,
+  "rules": 1,
+  "reveal_delay": 100
  },
  "genesis": "02f6018af3d28f4d725930e995a10ec88273f845e8603efe538fbaba5304f784",
  "steps": [

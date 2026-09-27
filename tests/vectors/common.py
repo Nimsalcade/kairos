@@ -68,7 +68,7 @@ def observe(chain: Chain) -> dict:
 
 def submit(chain: Chain, block_hex: str) -> str:
     try:
-        blk = Block.deserialize(bytes.fromhex(block_hex))
+        blk = Block.deserialize(bytes.fromhex(block_hex), chain.params.rules)
     except (ValueError, IndexError, KeyError) as e:        # noqa: F841 - any decoding failure
         return "malformed"
     except Exception:                                        # struct.error and friends
